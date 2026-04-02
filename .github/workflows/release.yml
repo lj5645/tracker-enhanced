@@ -85,14 +85,23 @@ jobs:
 
   create-release:
     needs: [build-linux, build-windows]
+    if: always() && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     
-    - name: Download all artifacts
+    - name: Download Linux artifacts
       uses: actions/download-artifact@v4
       with:
-        path: artifacts
+        name: linux-binaries
+        path: artifacts/linux-binaries
+    
+    - name: Download Windows artifacts
+      if: needs.build-windows.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-binaries
+        path: artifacts/windows-binaries
     
     - name: Display structure of downloaded files
       run: ls -R artifacts
@@ -117,7 +126,7 @@ jobs:
           | Platform | File |
           |----------|------|
           | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64 |
-          | Windows x86_64 | aquatic_udp-windows-x86_64.exe |
+          | Windows x86_64 | aquatic_udp-windows-x86_64.exe (if available) |
           
           ### Usage
           ```bash
@@ -134,6 +143,7 @@ jobs:
           - aquatic_udp supports both Linux and Windows
         draft: false
         prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        fail_on_unmatched_files: false
         files: |
           artifacts/linux-binaries/*
           artifacts/windows-binaries/*
