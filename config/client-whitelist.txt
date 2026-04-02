@@ -1,0 +1,21 @@
+# Client Whitelist
+# One User-Agent pattern per line (case-insensitive matching)
+# Lines starting with # are comments
+# When enabled, only clients matching these patterns will be allowed
+
+# Common BitTorrent Clients
+utorrent
+bittorrent
+transmission
+qbittorrent
+deluge
+libtorrent
+rtorrent
+vuze
+azureus
+bitcomet
+
+# Version examples (contains matching, version doesn't matter)
+# uTorrent/3.5.5 -> matches "utorrent"
+# Transmission/3.00 -> matches "transmission"
+# qBittorrent/4.5.0 -> matches "qbittorrent"

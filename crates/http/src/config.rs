@@ -8,6 +8,7 @@ use aquatic_common::{
     privileges::PrivilegeConfig,
     ip_ban::IpBanConfig,
     client_ban::ClientBanConfig,
+    client_whitelist::ClientWhitelistConfig,
     request_filter::RequestFilterConfig,
 };
 use aquatic_toml_config::TomlConfig;
@@ -59,6 +60,12 @@ pub struct Config {
     /// Block specific BitTorrent clients by peer_id pattern.
     /// The file is read on start and when the program receives `SIGUSR2`.
     pub client_ban: ClientBanConfig,
+    /// Client whitelist configuration
+    ///
+    /// Only allow specific BitTorrent clients by User-Agent pattern.
+    /// When enabled, clients not in the whitelist will be blocked.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_whitelist: ClientWhitelistConfig,
     /// Request filter configuration
     ///
     /// Filter malicious requests like SQL injection, path traversal, and crawlers.
@@ -80,6 +87,7 @@ impl Default for Config {
             access_list: AccessListConfig::default(),
             ip_ban: IpBanConfig::default(),
             client_ban: ClientBanConfig::default(),
+            client_whitelist: ClientWhitelistConfig::default(),
             request_filter: RequestFilterConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),

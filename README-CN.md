@@ -56,7 +56,45 @@ mode = "on"
 path = "config/client-ban-list.txt"
 ```
 
-### 3. 请求过滤功能
+### 3. 客户端白名单功能
+
+只允许特定的 BitTorrent 客户端访问，不在白名单中的客户端将被拒绝。
+
+**配置文件**: `config/client-whitelist.txt`
+
+```
+# 常见 BT 客户端
+utorrent
+bittorrent
+transmission
+qbittorrent
+deluge
+libtorrent
+rtorrent
+vuze
+azureus
+bitcomet
+```
+
+**配置项** (`config/aquatic-http.toml`):
+
+```toml
+[client_whitelist]
+mode = "on"
+path = "config/client-whitelist.txt"
+```
+
+**匹配规则**：
+- 使用 `contains` 匹配（包含匹配）
+- 大小写不敏感
+- 版本号不影响匹配结果
+
+**示例**：
+- `uTorrent/3.5.5` → 匹配 `utorrent` → ✅ 允许
+- `Transmission/3.00` → 匹配 `transmission` → ✅ 允许
+- `curl/7.68.0` → 不匹配任何白名单项 → ❌ 拒绝
+
+### 4. 请求过滤功能
 
 自动过滤恶意请求，包括：
 - SQL 注入攻击
@@ -74,7 +112,7 @@ filter_crawlers = true
 filter_private_ips = false
 ```
 
-### 4. Prometheus 监控
+### 5. Prometheus 监控
 
 内置 Prometheus 指标导出，支持 Grafana 可视化。
 
@@ -140,7 +178,7 @@ docker-compose up -d
 | 信号 | 功能 | 说明 |
 |------|------|------|
 | `SIGUSR1` | 重载访问列表和 TLS 证书 | 重新加载 `access_list` 和 TLS 配置 |
-| `SIGUSR2` | 重载封禁列表 | 重新加载 `ip_ban_list` 和 `client_ban_list` |
+| `SIGUSR2` | 重载封禁和白名单列表 | 重新加载 `ip_ban_list`、`client_ban_list` 和 `client_whitelist` |
 
 ### 使用方法
 
@@ -151,7 +189,7 @@ ps aux | grep aquatic_http
 # 重载访问列表和 TLS 证书
 kill -SIGUSR1 <pid>
 
-# 重载 IP 封禁列表和客户端封禁列表
+# 重载 IP 封禁列表、客户端封禁列表和客户端白名单
 kill -SIGUSR2 <pid>
 
 # 或者使用 pkill

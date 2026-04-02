@@ -3,6 +3,7 @@ use std::sync::Arc;
 use aquatic_common::access_list::AccessListArcSwap;
 use aquatic_common::ip_ban::IpBanListArcSwap;
 use aquatic_common::client_ban::ClientBanListArcSwap;
+use aquatic_common::client_whitelist::ClientWhitelistArcSwap;
 use aquatic_common::CanonicalSocketAddr;
 
 pub use aquatic_common::ValidUntil;
@@ -41,4 +42,5 @@ pub struct State {
     pub access_list: Arc<AccessListArcSwap>,
     pub ip_ban_list: Arc<IpBanListArcSwap>,
     pub client_ban_list: Arc<ClientBanListArcSwap>,
+    pub client_whitelist: Arc<ClientWhitelistArcSwap>,
 }

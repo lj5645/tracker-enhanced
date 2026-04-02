@@ -10,6 +10,7 @@ pub mod cli;
 pub mod cpu_pinning;
 pub mod ip_ban;
 pub mod client_ban;
+pub mod client_whitelist;
 pub mod request_filter;
 pub mod privileges;
 #[cfg(feature = "rustls")]

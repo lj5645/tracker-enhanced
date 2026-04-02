@@ -82,6 +82,14 @@ mode = "off"
 # Path to client ban list file
 path = "config/client-ban-list.txt"
 
+[client_whitelist]
+# Client whitelist mode: on, off
+# When enabled, only clients in the whitelist will be allowed
+# This is useful for private trackers that want to restrict client access
+mode = "off"
+# Path to client whitelist file
+path = "config/client-whitelist.txt"
+
 [request_filter]
 # Filter SQL injection attempts
 filter_sql_injection = true
