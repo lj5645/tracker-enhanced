@@ -9,7 +9,9 @@ use std::time::Duration;
 use anyhow::Context;
 use aquatic_common::WorkerType;
 use crossbeam_channel::unbounded;
+#[cfg(unix)]
 use signal_hook::consts::SIGUSR1;
+#[cfg(unix)]
 use signal_hook::iterator::Signals;
 
 use aquatic_common::access_list::update_access_list;
@@ -23,6 +25,7 @@ pub const APP_NAME: &str = "aquatic_udp: UDP BitTorrent tracker";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run(mut config: Config) -> ::anyhow::Result<()> {
+    #[cfg(unix)]
     let mut signals = Signals::new([SIGUSR1])?;
 
     if !(config.network.use_ipv4 || config.network.use_ipv6) {
@@ -141,6 +144,7 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     }
 
     // Spawn signal handler thread
+    #[cfg(unix)]
     {
         let config = config.clone();
 

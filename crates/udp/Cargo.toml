@@ -52,7 +52,6 @@ num-format = "0.4"
 parking_lot = "0.12"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
-signal-hook = { version = "0.3" }
 slab = "0.4"
 socket2 = { version = "0.5", features = ["all"] }
 time = { version = "0.3", features = ["formatting"] }
@@ -71,3 +70,6 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 tempfile = "3"
 quickcheck = "1"
 quickcheck_macros = "1"
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"

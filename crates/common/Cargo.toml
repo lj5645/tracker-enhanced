@@ -31,11 +31,13 @@ hex = "0.4"
 indexmap = "2"
 libc = "0.2"
 log = "0.4"
-privdrop = "0.5"
 rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
 simplelog = { version = "0.12" }
 toml = "0.5"
+
+[target.'cfg(unix)'.dependencies]
+privdrop = "0.5"
 
 # rustls feature
 rustls = { version = "0.23", optional = true }
