@@ -81,33 +81,8 @@ jobs:
           target/release/aquatic_http-windows-x86_64.exe
         retention-days: 1
 
-  build-macos:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install latest stable Rust
-      uses: dtolnay/rust-toolchain@stable
-      
-    - name: Setup Rust dependency caching
-      uses: Swatinem/rust-cache@v2
-    
-    - name: Build aquatic_udp
-      run: |
-        cargo build --release -p aquatic_udp --features metrics
-        strip target/release/aquatic_udp
-        mv target/release/aquatic_udp target/release/aquatic_udp-macos-x86_64
-    
-    - name: Upload macOS artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: macos-binaries
-        path: target/release/aquatic_udp-macos-x86_64
-        retention-days: 1
-
   create-release:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -141,11 +116,10 @@ jobs:
           |----------|------|
           | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64 |
           | Windows x86_64 | aquatic_udp-windows-x86_64.exe, aquatic_http-windows-x86_64.exe |
-          | macOS x86_64 | aquatic_udp-macos-x86_64 |
           
           ### Usage
           ```bash
-          # Linux/macOS
+          # Linux
           chmod +x aquatic_*
           ./aquatic_http -c aquatic-http.toml
           
@@ -157,6 +131,5 @@ jobs:
         files: |
           artifacts/linux-binaries/*
           artifacts/windows-binaries/*
-          artifacts/macos-binaries/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
