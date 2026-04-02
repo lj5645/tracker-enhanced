@@ -73,7 +73,7 @@ jobs:
     
     - name: Build aquatic_udp
       run: |
-        cargo build --release -p aquatic_udp
+        cargo build --release -p aquatic_udp --no-default-features --features prometheus
         mv target/release/aquatic_udp.exe target/release/aquatic_udp-windows-x86_64.exe
     
     - name: Upload Windows artifacts
