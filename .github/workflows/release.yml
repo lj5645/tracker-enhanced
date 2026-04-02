@@ -37,13 +37,13 @@ jobs:
     
     - name: Build aquatic_udp
       run: |
-        cargo build --release -p aquatic_udp --features metrics
+        cargo build --release -p aquatic_udp
         strip target/release/aquatic_udp
         mv target/release/aquatic_udp target/release/aquatic_udp-linux-x86_64
     
     - name: Build aquatic_http
       run: |
-        cargo build --release -p aquatic_http --features metrics
+        cargo build --release -p aquatic_http
         strip target/release/aquatic_http
         mv target/release/aquatic_http target/release/aquatic_http-linux-x86_64
     
@@ -73,7 +73,7 @@ jobs:
     
     - name: Build aquatic_udp
       run: |
-        cargo build --release -p aquatic_udp --features metrics
+        cargo build --release -p aquatic_udp
         mv target/release/aquatic_udp.exe target/release/aquatic_udp-windows-x86_64.exe
     
     - name: Upload Windows artifacts

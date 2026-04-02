@@ -1,6 +1,6 @@
 #[cfg(unix)]
 use std::sync::{Arc, Barrier};
-
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
