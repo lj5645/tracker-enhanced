@@ -14,34 +14,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
     - name: Build
       run: |
-        cargo build --verbose -p aquatic_udp
-        cargo build --verbose -p aquatic_http
-        cargo build --verbose -p aquatic_ws
+        cargo build --verbose -p aquatic_udp --features metrics
+        cargo build --verbose -p aquatic_http --features metrics
+        cargo build --verbose -p aquatic_ws --features metrics
 
   build-macos:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
     - name: Build
-      run: cargo build --verbose -p aquatic_udp
+      run: cargo build --verbose -p aquatic_udp --features metrics
 
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Setup Rust dependency caching

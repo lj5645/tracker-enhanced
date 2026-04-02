@@ -1,0 +1,162 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Pre-release'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install latest stable Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Setup Rust dependency caching
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Build aquatic_udp
+      run: |
+        cargo build --release -p aquatic_udp --features metrics
+        strip target/release/aquatic_udp
+        mv target/release/aquatic_udp target/release/aquatic_udp-linux-x86_64
+    
+    - name: Build aquatic_http
+      run: |
+        cargo build --release -p aquatic_http --features metrics
+        strip target/release/aquatic_http
+        mv target/release/aquatic_http target/release/aquatic_http-linux-x86_64
+    
+    - name: Upload Linux artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-binaries
+        path: |
+          target/release/aquatic_udp-linux-x86_64
+          target/release/aquatic_http-linux-x86_64
+        retention-days: 1
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install latest stable Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Setup Rust dependency caching
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Build aquatic_udp
+      run: |
+        cargo build --release -p aquatic_udp --features metrics
+        mv target/release/aquatic_udp.exe target/release/aquatic_udp-windows-x86_64.exe
+    
+    - name: Build aquatic_http
+      run: |
+        cargo build --release -p aquatic_http --features metrics
+        mv target/release/aquatic_http.exe target/release/aquatic_http-windows-x86_64.exe
+    
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-binaries
+        path: |
+          target/release/aquatic_udp-windows-x86_64.exe
+          target/release/aquatic_http-windows-x86_64.exe
+        retention-days: 1
+
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install latest stable Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Setup Rust dependency caching
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Build aquatic_udp
+      run: |
+        cargo build --release -p aquatic_udp --features metrics
+        strip target/release/aquatic_udp
+        mv target/release/aquatic_udp target/release/aquatic_udp-macos-x86_64
+    
+    - name: Upload macOS artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-binaries
+        path: target/release/aquatic_udp-macos-x86_64
+        retention-days: 1
+
+  create-release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.event.inputs.version }}
+        name: Tracker Enhanced ${{ github.event.inputs.version }}
+        body: |
+          ## Aquatic Tracker Enhanced Version
+          
+          ### Features
+          - IP Ban with CIDR range support
+          - Client Ban with peer_id pattern matching
+          - Client Whitelist with User-Agent filtering
+          - Request Filter for SQL injection, path traversal, and crawlers
+          - Hot reload support via SIGUSR1/SIGUSR2
+          - Prometheus metrics support
+          
+          ### Binaries
+          | Platform | File |
+          |----------|------|
+          | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64 |
+          | Windows x86_64 | aquatic_udp-windows-x86_64.exe, aquatic_http-windows-x86_64.exe |
+          | macOS x86_64 | aquatic_udp-macos-x86_64 |
+          
+          ### Usage
+          ```bash
+          # Linux/macOS
+          chmod +x aquatic_*
+          ./aquatic_http -c aquatic-http.toml
+          
+          # Windows
+          .\aquatic_http.exe -c aquatic-http.toml
+          ```
+        draft: false
+        prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        files: |
+          artifacts/linux-binaries/*
+          artifacts/windows-binaries/*
+          artifacts/macos-binaries/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
