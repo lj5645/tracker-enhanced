@@ -125,7 +125,7 @@ pub fn run_statistics_worker(
 
             // Only count peer_ids once, even if they are in multiple torrents
             #[allow(unused_variables)]
-            for (_, peer_client, prefix) in peers.values() {
+            for (_, peer_client, _prefix) in peers.values() {
                 *clients.entry(peer_client.to_owned()).or_insert(0) += 1;
 
                 #[cfg(feature = "prometheus")]
