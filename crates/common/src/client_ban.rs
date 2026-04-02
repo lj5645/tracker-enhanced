@@ -68,7 +68,7 @@ impl ClientBanList {
         let peer_id_lower = peer_id.to_lowercase();
         
         for pattern in &self.banned_patterns {
-            if peer_id_lower.contains(pattern) {
+            if peer_id_lower.starts_with(pattern) {
                 return true;
             }
         }
@@ -156,12 +156,19 @@ mod tests {
     fn test_client_ban() {
         let mut list = ClientBanList::default();
         list.banned_patterns.insert("-xl".to_string());
-        list.banned_patterns.insert("vampire".to_string());
+        list.banned_patterns.insert("-sd".to_string());
 
+        // 应该被封禁（以 -xl 或 -sd 开头）
         assert!(list.is_banned("-XL0012-abc123"));
         assert!(list.is_banned("-SD1234-def456"));
-        assert!(list.is_banned("some-vampire-client"));
+        
+        // 不应该被封禁（不以 -xl 或 -sd 开头）
         assert!(!list.is_banned("-UT1234-ghi789"));
+        assert!(!list.is_banned("-TR7890-jkl012"));
+        
+        // 不应该被封禁（包含但不是开头）
+        assert!(!list.is_banned("abc-xl-def"));
+        assert!(!list.is_banned("some-sd-client"));
     }
 
     #[test]
