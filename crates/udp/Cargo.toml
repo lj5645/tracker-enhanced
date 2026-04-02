@@ -29,7 +29,7 @@ io-uring = ["dep:io-uring"]
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
-aquatic_common.workspace = true
+aquatic_common = { workspace = true }
 aquatic_toml_config.workspace = true
 aquatic_udp_protocol.workspace = true
 
