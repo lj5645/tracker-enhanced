@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
 
 pub struct RequestFilter {
@@ -157,7 +158,7 @@ impl RequestFilter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
 pub struct RequestFilterConfig {
     pub filter_sql_injection: bool,
     pub filter_path_traversal: bool,
