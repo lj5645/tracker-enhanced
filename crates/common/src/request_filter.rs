@@ -78,6 +78,7 @@ pub enum FilterResult {
     BlockedPathTraversal,
     BlockedCrawler,
     BlockedPrivateIp,
+    BlockedMissingUserAgent,
 }
 
 impl RequestFilter {
@@ -85,7 +86,7 @@ impl RequestFilter {
         Self::default()
     }
 
-    pub fn check_request(&self, uri: &str, user_agent: Option<&str>) -> FilterResult {
+    pub fn check_request(&self, uri: &str, user_agent: Option<&str>, filter_missing_ua: bool) -> FilterResult {
         let uri_lower = uri.to_lowercase();
 
         for pattern in &self.sql_injection_patterns {
@@ -107,6 +108,8 @@ impl RequestFilter {
                     return FilterResult::BlockedCrawler;
                 }
             }
+        } else if filter_missing_ua {
+            return FilterResult::BlockedMissingUserAgent;
         }
 
         FilterResult::Allowed
@@ -145,8 +148,8 @@ impl RequestFilter {
         }
     }
 
-    pub fn is_allowed(&self, uri: &str, user_agent: Option<&str>) -> bool {
-        matches!(self.check_request(uri, user_agent), FilterResult::Allowed)
+    pub fn is_allowed(&self, uri: &str, user_agent: Option<&str>, filter_missing_ua: bool) -> bool {
+        matches!(self.check_request(uri, user_agent, filter_missing_ua), FilterResult::Allowed)
     }
 
     pub fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
@@ -160,6 +163,12 @@ pub struct RequestFilterConfig {
     pub filter_path_traversal: bool,
     pub filter_crawlers: bool,
     pub filter_private_ips: bool,
+    /// Filter requests without User-Agent header
+    ///
+    /// Most legitimate BitTorrent clients send User-Agent headers.
+    /// Requests without User-Agent are likely from crawlers, scanners,
+    /// or malicious tools.
+    pub filter_missing_user_agent: bool,
 }
 
 impl Default for RequestFilterConfig {
@@ -169,6 +178,7 @@ impl Default for RequestFilterConfig {
             filter_path_traversal: true,
             filter_crawlers: true,
             filter_private_ips: false,
+            filter_missing_user_agent: false,
         }
     }
 }
@@ -182,15 +192,15 @@ mod tests {
         let filter = RequestFilter::new();
 
         assert_eq!(
-            filter.check_request("/announce?info_hash=' OR 1=1", None),
+            filter.check_request("/announce?info_hash=' OR 1=1", None, false),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
-            filter.check_request("/announce?info_hash=union select", None),
+            filter.check_request("/announce?info_hash=union select", None, false),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
-            filter.check_request("/announce?info_hash=valid", None),
+            filter.check_request("/announce?info_hash=valid", None, false),
             FilterResult::Allowed
         );
     }
@@ -200,11 +210,11 @@ mod tests {
         let filter = RequestFilter::new();
 
         assert_eq!(
-            filter.check_request("/../../../etc/passwd", None),
+            filter.check_request("/../../../etc/passwd", None, false),
             FilterResult::BlockedPathTraversal
         );
         assert_eq!(
-            filter.check_request("/announce?info_hash=valid", None),
+            filter.check_request("/announce?info_hash=valid", None, false),
             FilterResult::Allowed
         );
     }
@@ -214,15 +224,38 @@ mod tests {
         let filter = RequestFilter::new();
 
         assert_eq!(
-            filter.check_request("/announce", Some("python-requests/2.28.0")),
+            filter.check_request("/announce", Some("python-requests/2.28.0"), false),
             FilterResult::BlockedCrawler
         );
         assert_eq!(
-            filter.check_request("/announce", Some("curl/7.68.0")),
+            filter.check_request("/announce", Some("curl/7.68.0"), false),
             FilterResult::BlockedCrawler
         );
         assert_eq!(
-            filter.check_request("/announce", Some("uTorrent/3.5.5")),
+            filter.check_request("/announce", Some("uTorrent/3.5.5"), false),
+            FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_missing_user_agent_detection() {
+        let filter = RequestFilter::new();
+
+        // 不过滤缺少 UA 的请求
+        assert_eq!(
+            filter.check_request("/announce", None, false),
+            FilterResult::Allowed
+        );
+
+        // 过滤缺少 UA 的请求
+        assert_eq!(
+            filter.check_request("/announce", None, true),
+            FilterResult::BlockedMissingUserAgent
+        );
+
+        // 有 UA 的请求不受影响
+        assert_eq!(
+            filter.check_request("/announce", Some("uTorrent/3.5.5"), true),
             FilterResult::Allowed
         );
     }

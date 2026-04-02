@@ -91,6 +91,11 @@ filter_path_traversal = true
 filter_crawlers = true
 # Filter private IP addresses (set to true if tracker is public)
 filter_private_ips = false
+# Filter requests without User-Agent header
+# Most legitimate BitTorrent clients send User-Agent headers.
+# Requests without User-Agent are likely from crawlers, scanners, or malicious tools.
+# Set to true to block requests without User-Agent header.
+filter_missing_user_agent = false
 
 [metrics]
 # Run a prometheus endpoint
