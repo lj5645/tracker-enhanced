@@ -1,7 +1,9 @@
 use std::{
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},
     path::PathBuf,
 };
+#[cfg(feature = "prometheus")]
+use std::net::SocketAddr;
 
 use aquatic_common::{access_list::AccessListConfig, privileges::PrivilegeConfig};
 use cfg_if::cfg_if;

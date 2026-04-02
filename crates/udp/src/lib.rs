@@ -3,7 +3,9 @@ pub mod config;
 pub mod swarm;
 pub mod workers;
 
-use std::thread::{available_parallelism, sleep, Builder, JoinHandle};
+use std::thread::{available_parallelism, sleep, Builder};
+#[cfg(unix)]
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::Context;

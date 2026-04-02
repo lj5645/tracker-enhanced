@@ -45,6 +45,7 @@ impl Socket<Ipv4> {
     pub fn create(config: &Config, priv_dropper: PrivilegeDropper) -> anyhow::Result<Self> {
         let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
+        #[cfg(unix)]
         socket
             .set_reuse_port(true)
             .with_context(|| "socket: set reuse port")?;
@@ -93,6 +94,7 @@ impl Socket<Ipv6> {
                 .set_only_v6(true)
                 .with_context(|| "socket: set only ipv6")?;
         }
+        #[cfg(unix)]
         socket
             .set_reuse_port(true)
             .with_context(|| "socket: set reuse port")?;

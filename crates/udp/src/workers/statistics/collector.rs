@@ -5,6 +5,7 @@ use hdrhistogram::Histogram;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 
+#[cfg(feature = "prometheus")]
 use crate::config::Config;
 
 use super::{IpVersion, Statistics};
