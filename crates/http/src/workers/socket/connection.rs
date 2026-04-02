@@ -6,6 +6,10 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use aquatic_common::access_list::{create_access_list_cache, AccessListArcSwap, AccessListCache};
+use aquatic_common::ip_ban::{create_ip_ban_list_cache, IpBanListArcSwap, IpBanListCache};
+use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListArcSwap, ClientBanListCache};
+use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistArcSwap, ClientWhitelistCache};
+use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
@@ -20,7 +24,9 @@ use futures_rustls::TlsAcceptor;
 use glommio::channels::channel_mesh::Senders;
 use glommio::channels::shared_channel::{self, SharedReceiver};
 use glommio::net::TcpStream;
-use once_cell::sync::Lazy;
+use glommio::timer::TimerActionRepeat;
+use glommio::{enclose, prelude::*};
+use slotmap::HopSlotMap;
 
 use crate::common::*;
 use crate::config::Config;
@@ -69,7 +75,7 @@ pub enum ConnectionError {
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_connection(
     config: Rc<Config>,
-    access_list: Arc<AccessListArcSwap>,
+    state: State,
     request_senders: Rc<Senders<ChannelRequest>>,
     server_start_instant: ServerStartInstant,
     opt_tls_config: Option<Arc<ArcSwap<RustlsConfig>>>,
@@ -77,7 +83,11 @@ pub(super) async fn run_connection(
     stream: TcpStream,
     worker_index: usize,
 ) -> Result<(), ConnectionError> {
-    let access_list_cache = create_access_list_cache(&access_list);
+    let access_list_cache = create_access_list_cache(&state.access_list);
+    let ip_ban_list_cache = create_ip_ban_list_cache(&state.ip_ban_list);
+    let client_ban_list_cache = create_client_ban_list_cache(&state.client_ban_list);
+    let client_whitelist_cache = create_client_whitelist_cache(&state.client_whitelist);
+    let request_filter = RequestFilter::new();
     let request_buffer = Box::new([0u8; REQUEST_BUFFER_SIZE]);
 
     let mut response_buffer = Box::new([0; RESPONSE_BUFFER_SIZE]);
@@ -106,6 +116,10 @@ pub(super) async fn run_connection(
         let mut conn = Connection {
             config,
             access_list_cache,
+            ip_ban_list_cache,
+            client_ban_list_cache,
+            client_whitelist_cache,
+            request_filter,
             request_senders,
             valid_until,
             server_start_instant,
@@ -122,6 +136,10 @@ pub(super) async fn run_connection(
         let mut conn = Connection {
             config,
             access_list_cache,
+            ip_ban_list_cache,
+            client_ban_list_cache,
+            client_whitelist_cache,
+            request_filter,
             request_senders,
             valid_until,
             server_start_instant,
@@ -140,6 +158,10 @@ pub(super) async fn run_connection(
 struct Connection<S> {
     config: Rc<Config>,
     access_list_cache: AccessListCache,
+    ip_ban_list_cache: IpBanListCache,
+    client_ban_list_cache: ClientBanListCache,
+    client_whitelist_cache: ClientWhitelistCache,
+    request_filter: RequestFilter,
     request_senders: Rc<Senders<ChannelRequest>>,
     valid_until: Rc<RefCell<ValidUntil>>,
     server_start_instant: ServerStartInstant,
@@ -161,11 +183,21 @@ where
         opt_stable_peer_addr: Option<CanonicalSocketAddr>,
     ) -> Result<(), ConnectionError> {
         loop {
-            let (request, opt_peer_addr) = self.read_request().await?;
+            let (request, opt_peer_addr, opt_user_agent, raw_request) = self.read_request().await?;
 
             let peer_addr = opt_stable_peer_addr
                 .or(opt_peer_addr)
                 .ok_or(anyhow::anyhow!("Could not extract peer addr"))?;
+
+            // Security checks
+            if let Some(response) = self.run_security_checks(&peer_addr, &opt_user_agent, &request, &raw_request)? {
+                self.write_response(&response, peer_addr).await?;
+                
+                if !self.config.network.keep_alive {
+                    break;
+                }
+                continue;
+            }
 
             let response = self.handle_request(request, peer_addr).await?;
 
@@ -179,9 +211,71 @@ where
         Ok(())
     }
 
+    fn run_security_checks(
+        &mut self,
+        peer_addr: &CanonicalSocketAddr,
+        opt_user_agent: &Option<String>,
+        request: &Request,
+        raw_request: &str,
+    ) -> Result<Option<Response>, ConnectionError> {
+        // 1. IP ban check
+        if self.config.ip_ban.mode.is_on() {
+            let peer_ip = peer_addr.get().ip();
+            if self.ip_ban_list_cache.load().is_banned(&peer_ip) {
+                ::log::debug!("IP banned: {}", peer_ip);
+                return Ok(Some(Response::Failure(FailureResponse {
+                    failure_reason: "IP banned".into(),
+                })));
+            }
+        }
+
+        // 2. Request filter check
+        {
+            let filter_config = &self.config.request_filter;
+            
+            if !self.request_filter.is_allowed(
+                raw_request,
+                opt_user_agent.as_deref(),
+                filter_config.filter_missing_user_agent,
+            ) {
+                ::log::debug!("Request filtered: {}", raw_request);
+                return Ok(Some(Response::Failure(FailureResponse {
+                    failure_reason: "Request filtered".into(),
+                })));
+            }
+        }
+
+        // 3. Client whitelist check
+        if self.config.client_whitelist.mode.is_on() {
+            if let Some(user_agent) = opt_user_agent {
+                if !self.client_whitelist_cache.load().is_allowed(user_agent) {
+                    ::log::debug!("Client not whitelisted: {}", user_agent);
+                    return Ok(Some(Response::Failure(FailureResponse {
+                        failure_reason: "Client not allowed".into(),
+                    })));
+                }
+            }
+        }
+
+        // 4. Client ban check (for announce requests)
+        if self.config.client_ban.mode.is_on() {
+            if let Request::Announce(announce_request) = request {
+                let peer_id = String::from_utf8_lossy(&announce_request.peer_id.0);
+                if self.client_ban_list_cache.load().is_banned(&peer_id) {
+                    ::log::debug!("Client banned: {}", peer_id);
+                    return Ok(Some(Response::Failure(FailureResponse {
+                        failure_reason: "Client banned".into(),
+                    })));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn read_request(
         &mut self,
-    ) -> Result<(Request, Option<CanonicalSocketAddr>), ConnectionError> {
+    ) -> Result<(Request, Option<CanonicalSocketAddr>, Option<String>, String), ConnectionError> {
         self.request_buffer_position = 0;
 
         loop {
@@ -204,9 +298,10 @@ where
             let buffer_slice = &self.request_buffer[..self.request_buffer_position];
 
             match parse_request(&self.config, buffer_slice) {
-                Ok((request, opt_peer_ip)) => {
+                Ok(parsed) => {
                     let opt_peer_addr = if self.config.network.runs_behind_reverse_proxy {
-                        let peer_ip = opt_peer_ip
+                        let peer_ip = parsed
+                            .opt_peer_ip
                             .expect("logic error: peer ip must have been extracted at this point");
 
                         Some(CanonicalSocketAddr::new(SocketAddr::new(
@@ -217,7 +312,9 @@ where
                         None
                     };
 
-                    return Ok((request, opt_peer_addr));
+                    let raw_request = String::from_utf8_lossy(buffer_slice).to_string();
+
+                    return Ok((parsed.request, opt_peer_addr, parsed.opt_user_agent, raw_request));
                 }
                 Err(RequestParseError::MoreDataNeeded) => continue,
                 Err(RequestParseError::RequiredPeerIpHeaderMissing(err)) => {

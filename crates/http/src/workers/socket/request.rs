@@ -15,10 +15,16 @@ pub enum RequestParseError {
     Other(#[from] anyhow::Error),
 }
 
+pub struct ParsedRequest {
+    pub request: Request,
+    pub opt_peer_ip: Option<IpAddr>,
+    pub opt_user_agent: Option<String>,
+}
+
 pub fn parse_request(
     config: &Config,
     buffer: &[u8],
-) -> Result<(Request, Option<IpAddr>), RequestParseError> {
+) -> Result<ParsedRequest, RequestParseError> {
     let mut headers = [httparse::EMPTY_HEADER; 16];
     let mut http_request = httparse::Request::new(&mut headers);
 
@@ -41,10 +47,27 @@ pub fn parse_request(
                 None
             };
 
-            Ok((request, opt_peer_ip))
+            let opt_user_agent = parse_user_agent_header(http_request.headers);
+
+            Ok(ParsedRequest {
+                request,
+                opt_peer_ip,
+                opt_user_agent,
+            })
         }
         httparse::Status::Partial => Err(RequestParseError::MoreDataNeeded),
     }
+}
+
+fn parse_user_agent_header(headers: &[httparse::Header<'_>]) -> Option<String> {
+    for header in headers {
+        if header.name.eq_ignore_ascii_case("User-Agent") {
+            if let Ok(ua) = ::std::str::from_utf8(header.value) {
+                return Some(ua.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_forwarded_header(

@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use aquatic_common::access_list::AccessList;
 use aquatic_common::privileges::PrivilegeDropper;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
@@ -97,7 +96,7 @@ pub async fn run_socket_worker(
         .map(|tcp_listener| {
             let listener_state = ListenerState {
                 config: config.clone(),
-                access_list: state.access_list.clone(),
+                state: state.clone(),
                 opt_tls_config: opt_tls_config.clone(),
                 server_start_instant,
                 connection_handles: connection_handles.clone(),
@@ -119,7 +118,7 @@ pub async fn run_socket_worker(
 #[derive(Clone)]
 struct ListenerState {
     config: Rc<Config>,
-    access_list: Arc<ArcSwapAny<Arc<AccessList>>>,
+    state: State,
     opt_tls_config: Option<Arc<ArcSwap<RustlsConfig>>>,
     server_start_instant: ServerStartInstant,
     connection_handles: Rc<RefCell<HopSlotMap<ConnectionId, ConnectionHandle>>>,
@@ -183,7 +182,7 @@ impl ListenerState {
         let f1 = async {
             run_connection(
                 self.config,
-                self.access_list,
+                self.state,
                 self.request_senders,
                 self.server_start_instant,
                 self.opt_tls_config,
