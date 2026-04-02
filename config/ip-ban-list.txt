@@ -1,0 +1,16 @@
+# IP Ban List
+# One IP or CIDR range per line
+# Lines starting with # are comments
+
+# Example: Block specific IP
+# 192.168.1.100
+
+# Example: Block IP range
+# 10.0.0.0/8
+
+# Example: Block IPv6 range
+# 2001:db8::/32
+
+# Example: Block known malicious IPs
+# 45.33.32.156
+# 185.220.101.0/24

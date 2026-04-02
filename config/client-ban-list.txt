@@ -1,0 +1,24 @@
+# Client Ban List
+# One peer_id pattern per line (case-insensitive matching)
+# Lines starting with # are comments
+
+# Example: Block Xunlei (迅雷)
+-xl
+-sd
+
+# Example: Block QQ Xuanfeng (QQ旋风)
+-qd
+
+# Example: Block BitComet吸血版本
+-bn
+-bc
+
+# Example: Block uTorrent Web
+-uw
+
+# Example: Block FlashGet
+-fg
+
+# Example: Block custom client pattern
+# vampire
+# leecher

@@ -1,12 +1,16 @@
 use anyhow::Context;
 use aquatic_common::{
-    access_list::update_access_list, privileges::PrivilegeDropper,
-    rustls_config::create_rustls_config, ServerStartInstant, WorkerType,
+    access_list::update_access_list,
+    ip_ban::update_ip_ban_list,
+    client_ban::update_client_ban_list,
+    privileges::PrivilegeDropper,
+    rustls_config::create_rustls_config,
+    ServerStartInstant, WorkerType,
 };
 use arc_swap::ArcSwap;
 use common::State;
 use glommio::{channels::channel_mesh::MeshBuilder, prelude::*};
-use signal_hook::{consts::SIGUSR1, iterator::Signals};
+use signal_hook::{consts::{SIGUSR1, SIGUSR2}, iterator::Signals};
 use std::{
     sync::Arc,
     thread::{sleep, Builder, JoinHandle},
@@ -25,7 +29,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const SHARED_CHANNEL_SIZE: usize = 1024;
 
 pub fn run(config: Config) -> ::anyhow::Result<()> {
-    let mut signals = Signals::new([SIGUSR1])?;
+    let mut signals = Signals::new([SIGUSR1, SIGUSR2])?;
 
     if !(config.network.use_ipv4 || config.network.use_ipv6) {
         return Result::Err(anyhow::anyhow!(
@@ -36,6 +40,8 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     let state = State::default();
 
     update_access_list(&config.access_list, &state.access_list)?;
+    update_ip_ban_list(&config.ip_ban, &state.ip_ban_list)?;
+    update_client_ban_list(&config.client_ban, &state.client_ban_list)?;
 
     let request_mesh_builder = MeshBuilder::partial(
         config.socket_workers + config.swarm_workers,
@@ -163,6 +169,10 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
                                     }
                                 }
                             }
+                        }
+                        SIGUSR2 => {
+                            let _ = update_ip_ban_list(&config.ip_ban, &state.ip_ban_list);
+                            let _ = update_client_ban_list(&config.client_ban, &state.client_ban_list);
                         }
                         _ => unreachable!(),
                     }

@@ -3,7 +3,13 @@ use std::{
     path::PathBuf,
 };
 
-use aquatic_common::{access_list::AccessListConfig, privileges::PrivilegeConfig};
+use aquatic_common::{
+    access_list::AccessListConfig,
+    privileges::PrivilegeConfig,
+    ip_ban::IpBanConfig,
+    client_ban::ClientBanConfig,
+    request_filter::RequestFilterConfig,
+};
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +49,20 @@ pub struct Config {
     /// emitting of an error-level log message, while successful updates of the
     /// access list result in emitting of an info-level log message.
     pub access_list: AccessListConfig,
+    /// IP ban list configuration
+    ///
+    /// Block requests from specific IP addresses or CIDR ranges.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub ip_ban: IpBanConfig,
+    /// Client ban list configuration
+    ///
+    /// Block specific BitTorrent clients by peer_id pattern.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_ban: ClientBanConfig,
+    /// Request filter configuration
+    ///
+    /// Filter malicious requests like SQL injection, path traversal, and crawlers.
+    pub request_filter: RequestFilterConfig,
     #[cfg(feature = "metrics")]
     pub metrics: MetricsConfig,
 }
@@ -58,6 +78,9 @@ impl Default for Config {
             cleaning: CleaningConfig::default(),
             privileges: PrivilegeConfig::default(),
             access_list: AccessListConfig::default(),
+            ip_ban: IpBanConfig::default(),
+            client_ban: ClientBanConfig::default(),
+            request_filter: RequestFilterConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),
         }

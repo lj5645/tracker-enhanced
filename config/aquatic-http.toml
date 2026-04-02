@@ -1,0 +1,101 @@
+# aquatic_http configuration file
+# Generated for enhanced tracker with IP/Client banning and request filtering
+
+# Number of socket worker. One per physical core is recommended.
+socket_workers = 1
+
+# Number of swarm workers. One is enough in almost all cases
+swarm_workers = 1
+
+# Log level: error, warn, info, debug, trace
+log_level = "info"
+
+[network]
+# Use IPv4
+use_ipv4 = true
+# Use IPv6
+use_ipv6 = true
+# IPv4 address and port
+address_ipv4 = "0.0.0.0:3000"
+# IPv6 address and port
+address_ipv6 = "[::]:3000"
+# Maximum number of pending TCP connections
+tcp_backlog = 1024
+# Enable TLS
+enable_tls = false
+# Path to TLS certificate (DER-encoded X.509)
+tls_certificate_path = ""
+# Path to TLS private key (DER-encoded ASN.1 in PKCS#8 or PKCS#1 format)
+tls_private_key_path = ""
+# Keep connections alive after sending a response
+keep_alive = true
+# Does tracker run behind reverse proxy?
+runs_behind_reverse_proxy = false
+# Name of header set by reverse proxy to indicate peer ip
+reverse_proxy_ip_header_name = "X-Forwarded-For"
+# How to extract peer IP from header field: last_address
+reverse_proxy_ip_header_format = "last_address"
+# Set flag on IPv6 socket to only accept IPv6 traffic
+set_only_ipv6 = true
+
+[protocol]
+# Maximum number of torrents to accept in scrape request
+max_scrape_torrents = 100
+# Maximum number of requested peers to accept in announce request
+max_peers = 50
+# Ask peers to announce this often (seconds)
+peer_announce_interval = 120
+
+[cleaning]
+# Clean peers this often (seconds)
+torrent_cleaning_interval = 30
+# Clean connections this often (seconds)
+connection_cleaning_interval = 60
+# Remove peers that have not announced for this long (seconds)
+max_peer_age = 1800
+# Remove connections that haven't seen valid requests for this long (seconds)
+max_connection_idle = 180
+
+[privileges]
+# Drop privileges after binding to sockets
+drop_privileges = false
+# User to drop privileges to
+user = "nobody"
+# Group to drop privileges to
+group = "nogroup"
+
+[access_list]
+# Access list mode: on, off
+mode = "off"
+# Path to access list file
+path = ""
+
+[ip_ban]
+# IP ban list mode: on, off
+mode = "off"
+# Path to IP ban list file
+path = "config/ip-ban-list.txt"
+
+[client_ban]
+# Client ban list mode: on, off
+mode = "off"
+# Path to client ban list file
+path = "config/client-ban-list.txt"
+
+[request_filter]
+# Filter SQL injection attempts
+filter_sql_injection = true
+# Filter path traversal attempts
+filter_path_traversal = true
+# Filter known crawlers and bots
+filter_crawlers = true
+# Filter private IP addresses (set to true if tracker is public)
+filter_private_ips = false
+
+[metrics]
+# Run a prometheus endpoint
+run_prometheus_endpoint = true
+# Address to run prometheus endpoint on
+prometheus_endpoint_address = "0.0.0.0:9000"
+# Update metrics for torrent count this often (seconds)
+torrent_count_update_interval = 10

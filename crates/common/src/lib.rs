@@ -8,6 +8,9 @@ pub mod access_list;
 pub mod cli;
 #[cfg(feature = "cpu-pinning")]
 pub mod cpu_pinning;
+pub mod ip_ban;
+pub mod client_ban;
+pub mod request_filter;
 pub mod privileges;
 #[cfg(feature = "rustls")]
 pub mod rustls_config;
