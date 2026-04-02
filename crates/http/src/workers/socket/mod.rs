@@ -12,7 +12,7 @@ use anyhow::Context;
 use aquatic_common::privileges::PrivilegeDropper;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
-use arc_swap::{ArcSwap, ArcSwapAny};
+use arc_swap::ArcSwap;
 use futures_lite::future::race;
 use futures_lite::StreamExt;
 use glommio::channels::channel_mesh::{MeshBuilder, Partial, Role, Senders};

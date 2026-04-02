@@ -5,10 +5,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Context;
-use aquatic_common::access_list::{create_access_list_cache, AccessListArcSwap, AccessListCache};
-use aquatic_common::ip_ban::{create_ip_ban_list_cache, IpBanListArcSwap, IpBanListCache};
-use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListArcSwap, ClientBanListCache};
-use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistArcSwap, ClientWhitelistCache};
+use aquatic_common::access_list::{create_access_list_cache, AccessListCache};
+use aquatic_common::ip_ban::{create_ip_ban_list_cache, IpBanListCache};
+use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCache};
+use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
@@ -24,9 +24,7 @@ use futures_rustls::TlsAcceptor;
 use glommio::channels::channel_mesh::Senders;
 use glommio::channels::shared_channel::{self, SharedReceiver};
 use glommio::net::TcpStream;
-use glommio::timer::TimerActionRepeat;
-use glommio::{enclose, prelude::*};
-use slotmap::HopSlotMap;
+use once_cell::sync::Lazy;
 
 use crate::common::*;
 use crate::config::Config;
