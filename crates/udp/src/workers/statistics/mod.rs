@@ -48,7 +48,10 @@ pub fn run_statistics_worker(
     statistics_receiver: Receiver<StatisticsMessage>,
 ) -> anyhow::Result<()> {
     let process_peer_client_data = {
+        #[cfg(feature = "prometheus")]
         let mut collect = config.statistics.write_html_to_file;
+        #[cfg(not(feature = "prometheus"))]
+        let collect = config.statistics.write_html_to_file;
 
         #[cfg(feature = "prometheus")]
         {
@@ -121,6 +124,7 @@ pub fn run_statistics_worker(
             let mut prefixes: IndexMap<CompactString, usize> = IndexMap::default();
 
             // Only count peer_ids once, even if they are in multiple torrents
+            #[allow(unused_variables)]
             for (_, peer_client, prefix) in peers.values() {
                 *clients.entry(peer_client.to_owned()).or_insert(0) += 1;
 

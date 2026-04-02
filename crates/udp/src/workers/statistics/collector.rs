@@ -58,6 +58,7 @@ impl StatisticsCollector {
         #[cfg(feature = "prometheus")]
         let ip_version_prometheus_str = self.ip_version.prometheus_str();
 
+        #[allow(unused_variables)]
         for (i, statistics) in self
             .statistics
             .socket
