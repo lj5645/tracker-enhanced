@@ -1,0 +1,10 @@
+# 访问列表（种子白名单/黑名单）
+# 格式: 每行一个 info_hash (40位十六进制)
+# 以 # 开头的行为注释
+#
+# 注意: 只有当 [access_list] mode = "on" 时才生效
+# 默认情况下，访问列表是关闭的
+
+# 示例 info_hash
+# aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

@@ -1,0 +1,281 @@
+# 客户端封禁列表
+# 格式: 每行一个 peer_id 前缀模式
+# 以 # 开头的行为注释
+#
+# 注意: 程序已内置吸血客户端检测，此列表为额外封禁规则
+# 内置封禁: -xl, -sd, -qd, -bn, -bc, -uw, -dt, -fg, -fs
+
+# ============================================================
+# 吸血客户端 (Leecher Clients)
+# 这些客户端不上传或严重限制上传速度
+# ============================================================
+
+# BitThief - 专门不上传的吸血客户端
+-bt
+
+# BitRocket - macOS 吸血客户端
+-br
+
+# TorrentStorm - 吸血客户端
+-ts
+
+# FoxTorrent/FireTorrent - Firefox 插件吸血客户端
+-fo
+
+# GetRight - 下载管理器，吸血行为
+-gr
+
+# GreedBT - 吸血客户端
+-gb
+
+# Pando - P2P 软件，吸血行为
+-pd
+
+# uLeecher! - 明确的吸血客户端名称
+-ul
+
+# ============================================================
+# 被滥用的客户端 (Abused Clients)
+# 这些客户端常被用于刷流量、爬虫或恶意用途
+# ============================================================
+
+# MediaGet - 常被滥用，广告软件
+-mg
+
+# BitLet - Java WebStart 客户端，被滥用
+-bl
+
+# XBT Client - 常被爬虫使用
+-xb
+
+# Shareaza - 多协议客户端，被滥用
+-sz
+
+# BitSpirit - 中国客户端，有吸血争议
+-sp
+
+# qqdownload - 腾讯下载器（非QQ旋风）
+-qq
+
+# FlashGet Mini - 迷你版快车
+-fm
+
+# Orbit Downloader - 下载管理器
+-od
+
+# ============================================================
+# 已停止维护/不安全客户端 (Deprecated/Insecure)
+# ============================================================
+
+# gTorrent - 已停止维护
+-gt
+
+# ABC (Yet Another BitTorrent Client) - 已停止维护
+-ab
+
+# Arctic Torrent - 已停止维护
+-ac
+
+# Burst! - 已停止维护
+-bs
+
+# CTorrent - 已停止维护
+-ct
+
+# Enhanced CTorrent - 已停止维护
+-ec
+
+# KTorrent 旧版本（KDE 客户端）
+-kc
+
+# Lphant - eDonkey/BT 混合客户端，已停止
+-lp
+
+# MooPolice - 已停止维护
+-mp
+
+# QTorrent - 已停止维护（非 qBittorrent）
+-qt
+
+# SymTorrent - Symbian 客户端，已停止
+-st
+
+# TorrenTopia - 已停止维护
+-tp
+
+# TurboBT - 已停止维护
+-tb
+
+# Vuze 旧版本（有漏洞）
+-vz
+
+# BitTornado - 已停止维护，有漏洞
+-bn
+
+# ============================================================
+# P2P 软件/下载器 (Non-BT Downloaders)
+# 这些不是纯 BT 客户端，可能有不良行为
+# ============================================================
+
+# Morpheus - P2P 软件
+-mo
+
+# LimeWire - Gnutella 客户端
+-lw
+
+# BearShare - Gnutella 客户端
+-bh
+
+# iMesh - P2P 软件
+-ix
+
+# Kazaa - P2P 软件
+-ka
+
+# eMule - eDonkey 客户端（非 BT）
+-em
+
+# eDonkey - eDonkey 客户端
+-en
+
+# Ares Galaxy - P2P 软件
+-ag
+
+# SoulSeek - P2P 软件
+-sk
+
+# WinMX - P2P 软件
+-wm
+
+# FrostWire - LimeWire 分支
+-fw
+
+# ============================================================
+# 修改版/伪装客户端 (Modified/Fake Clients)
+# 这些可能是修改版客户端或伪装成其他客户端
+# ============================================================
+
+# 伪装的 uTorrent（非官方版本号）
+-ut0
+-ut1
+-ut2
+-ut3
+-ut4
+-ut5
+-ut6
+-ut7
+-ut8
+-ut9
+
+# 伪装的 Transmission（非官方版本号）
+-tx0
+-tx1
+-tx2
+-tx3
+-tx4
+-tx5
+-tx6
+-tx7
+-tx8
+-tx9
+
+# 伪装的 BitComet（非官方版本号）
+-bc0
+-bc1
+-bc2
+-bc3
+-bc4
+-bc5
+-bc6
+-bc7
+-bc8
+-bc9
+
+# 未知/可疑客户端标识
+-xx
+-yy
+-zz
+-nu
+-nl
+-fk
+
+# ============================================================
+# 商业下载器 (Commercial Downloaders)
+# 这些通常是商业软件，可能有吸血行为
+# ============================================================
+
+# Net Transport
+-nt
+
+# HiDownload
+-hd
+
+# WellGet
+-wg
+
+# BitComet Accelerator
+-ba
+
+# BitTorrent Acceleration Tool
+-at
+
+# Internet Download Manager
+-id
+
+# ============================================================
+# 其他可疑客户端 (Other Suspicious Clients)
+# ============================================================
+
+# 未知客户端标识
+-unknown
+
+# 匿名客户端标识
+-anon
+
+# 自定义客户端标识
+-custom
+
+# 测试客户端标识
+-test
+
+# 调试客户端标识
+-debug
+
+# ============================================================
+# 中国特有吸血/问题客户端
+# ============================================================
+
+# 迅雷其他变体（补充内置的 -xl, -sd）
+-xn
+-xm
+
+# 搜狗下载器
+-sg
+
+# 百度网盘客户端
+-bd
+
+# 115网盘客户端
+-15
+
+# 迅雷看看
+-xk
+
+# ============================================================
+# 爬虫/机器人标识
+# ============================================================
+
+# 爬虫标识
+-bot
+
+# 机器人标识
+-robot
+
+# 蜘蛛标识
+-spider
+
+# 爬虫标识
+-crawler
+
+# 扫描器标识
+-scanner

@@ -1,0 +1,20 @@
+# 客户端白名单
+# 格式: 每行一个 User-Agent 匹配模式（不区分大小写）
+# 以 # 开头的行为注释
+#
+# 注意: 只有当 [client_whitelist] mode = "on" 时才生效
+# 开启白名单后，只有匹配白名单的客户端才能访问
+
+# 常见合法 BitTorrent 客户端
+utorrent
+transmission
+qbittorrent
+deluge
+rtorrent
+libtorrent
+bittorrent
+vuze
+azureus
+
+# 注意: 白名单模式会覆盖客户端封禁功能
+# 如果同时需要封禁某些客户端，请在白名单中不包含它们

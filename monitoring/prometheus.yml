@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'aquatic-http'
+    static_configs:
+      - targets: ['192.168.66.118:9000']
+        labels:
+          instance: 'aquatic-http'
+    metrics_path: /metrics
+
+  - job_name: 'node-exporter'
+    static_configs:
+      # 使用 host 网络模式后，直接访问本地 9100 端口
+      - targets: ['192.168.66.118:9100']
+        labels:
+          instance: 'tracker-server'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

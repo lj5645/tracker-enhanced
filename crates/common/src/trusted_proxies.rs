@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use aquatic_toml_config::TomlConfig;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
 
@@ -36,9 +36,34 @@ impl Default for TrustedProxiesConfig {
     }
 }
 
-#[derive(Clone, Debug, Default)]
 pub struct TrustedProxies {
     table: IpNetworkTable<()>,
+}
+
+impl std::fmt::Debug for TrustedProxies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrustedProxies")
+            .field("entry_count", &self.table.len())
+            .finish()
+    }
+}
+
+impl Clone for TrustedProxies {
+    fn clone(&self) -> Self {
+        let mut new_table = IpNetworkTable::new();
+        for (network, value) in self.table.iter() {
+            new_table.insert(network, value.clone());
+        }
+        Self { table: new_table }
+    }
+}
+
+impl Default for TrustedProxies {
+    fn default() -> Self {
+        Self {
+            table: IpNetworkTable::new(),
+        }
+    }
 }
 
 impl TrustedProxies {

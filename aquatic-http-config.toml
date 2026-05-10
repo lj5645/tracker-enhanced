@@ -1,0 +1,211 @@
+# aquatic_http 配置文件
+# HTTP BitTorrent Tracker 配置
+
+# ============================================================
+# 工作线程配置
+# ============================================================
+
+# Socket 工作线程数量（建议每个物理核心一个）
+# Socket workers 接收请求、解析并转发给 swarm workers
+socket_workers = 1
+
+# Swarm 工作线程数量（通常一个就够了）
+# Swarm workers 处理请求并生成响应
+swarm_workers = 1
+
+# 日志级别: error, warn, info, debug, trace
+log_level = "info"
+
+# ============================================================
+# 网络配置
+# ============================================================
+
+[network]
+# 启用 IPv4
+use_ipv4 = true
+
+# 启用 IPv6
+use_ipv6 = true
+
+# IPv4 监听地址和端口
+# 0.0.0.0 表示监听所有网络接口
+address_ipv4 = "0.0.0.0:6969"
+
+# IPv6 监听地址和端口
+# [::] 表示监听所有 IPv6 地址
+address_ipv6 = "[::]:6969"
+
+# TCP 连接等待队列长度
+tcp_backlog = 1024
+
+# 是否启用 TLS (HTTPS)
+enable_tls = false
+
+# TLS 证书路径 (DER 格式)
+tls_certificate_path = ""
+
+# TLS 私钥路径 (DER 格式)
+tls_private_key_path = ""
+
+# 是否保持连接活跃
+keep_alive = true
+
+# 是否运行在反向代理后面
+# 如果使用 nginx/apache 等反向代理，设置为 true
+runs_behind_reverse_proxy = false
+
+# 反向代理传递真实 IP 的头部名称
+reverse_proxy_ip_header_name = "X-Forwarded-For"
+
+# 反向代理 IP 头部格式
+reverse_proxy_ip_header_format = "last_address"
+
+# IPv6 socket 只接受 IPv6 流量
+set_only_ipv6 = true
+
+# ============================================================
+# 协议配置
+# ============================================================
+
+[protocol]
+# Scrape 请求中最大 torrent 数量
+max_scrape_torrents = 100
+
+# Announce 请求中最大返回 peer 数量
+max_peers = 50
+
+# Peer 重新 announce 间隔（秒）
+peer_announce_interval = 120
+
+# ============================================================
+# 清理配置
+# ============================================================
+
+[cleaning]
+# 清理过期 peer 的间隔（秒）
+torrent_cleaning_interval = 30
+
+# 清理空闲连接的间隔（秒）
+connection_cleaning_interval = 60
+
+# Peer 最大存活时间（秒），超过此时间未 announce 将被移除
+max_peer_age = 1800
+
+# 连接最大空闲时间（秒）
+max_connection_idle = 180
+
+# ============================================================
+# 权限配置
+# ============================================================
+
+[privileges]
+# 启动后降权到的用户（留空表示不降权）
+user = ""
+
+# 启动后降权到的用户组（留空表示不降权）
+group = ""
+
+# ============================================================
+# 访问列表配置（种子白名单/黑名单）
+# ============================================================
+
+[access_list]
+# 模式: on, off
+mode = "off"
+
+# 访问列表文件路径
+# 文件格式: 每行一个 info_hash，以 # 开头为注释
+path = "./access-list.txt"
+
+# ============================================================
+# IP 封禁配置
+# ============================================================
+
+[ip_ban]
+# 模式: on, off
+mode = "on"
+
+# IP 封禁列表文件路径
+# 文件格式: 每行一个 IP 或 CIDR，以 # 开头为注释
+# 示例:
+#   192.168.1.100      # 封禁单个 IP
+#   10.0.0.0/8         # 封禁整个网段
+#   2001:db8::/32      # 封禁 IPv6 网段
+path = "./ip-ban-list.txt"
+
+# ============================================================
+# 客户端封禁配置（吸血客户端封禁）
+# ============================================================
+
+[client_ban]
+# 模式: on, off
+# 开启后将封禁吸血客户端和自定义封禁列表中的客户端
+mode = "on"
+
+# 客户端封禁列表文件路径
+# 文件格式: 每行一个 peer_id 前缀模式，以 # 开头为注释
+# 示例:
+#   -xl      # 迅雷
+#   -sd      # 迅雷
+#   -qd      # QQ旋风
+#   -bn      # BitComet
+#   -bc      # BitComet
+path = "./client-ban-list.txt"
+
+# ============================================================
+# 客户端白名单配置
+# ============================================================
+
+[client_whitelist]
+# 模式: on, off
+# 开启后只允许白名单中的客户端访问
+# 注意: 开启白名单会覆盖客户端封禁功能
+mode = "off"
+
+# 客户端白名单文件路径
+# 文件格式: 每行一个 User-Agent 匹配模式，以 # 开头为注释
+# 示例:
+#   utorrent
+#   transmission
+#   qbittorrent
+path = "./client-whitelist.txt"
+
+# ============================================================
+# 请求过滤配置（屏蔽非标准请求）
+# ============================================================
+
+[request_filter]
+# 过滤 SQL 注入攻击
+# 检测 URI 中的 SQL 关键字: union, select, insert, delete, update, drop 等
+filter_sql_injection = true
+
+# 过滤路径遍历攻击
+# 检测 URI 中的 ../ 和编码变体
+filter_path_traversal = true
+
+# 过滤爬虫和扫描器
+# 检测 User-Agent 中的: bot, crawler, spider, curl, wget, python-requests 等
+filter_crawlers = true
+
+# 过滤私有 IP 地址
+# 阻止来自私有 IP 的请求: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 等
+filter_private_ips = false
+
+# 过滤缺少 User-Agent 的请求
+# 大多数合法的 BitTorrent 客户端都会发送 User-Agent
+# 开启此选项可以阻止扫描器和恶意工具
+filter_missing_user_agent = true
+
+# ============================================================
+# Prometheus 指标配置（需要编译时启用 metrics feature）
+# ============================================================
+
+[metrics]
+# 是否运行 Prometheus 指标端点
+run_prometheus_endpoint = false
+
+# Prometheus 端点地址
+prometheus_endpoint_address = "0.0.0.0:9000"
+
+# Torrent 数量更新间隔（秒）
+torrent_count_update_interval = 10
