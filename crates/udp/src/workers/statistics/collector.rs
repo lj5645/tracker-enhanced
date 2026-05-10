@@ -59,7 +59,7 @@ impl StatisticsCollector {
         let ip_version_prometheus_str = self.ip_version.prometheus_str();
 
         #[allow(unused_variables)]
-        for (_i, statistics) in self
+        for (i, statistics) in self
             .statistics
             .socket
             .iter()

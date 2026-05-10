@@ -42,6 +42,21 @@ fn usize_to_i32_checked(value: usize, context: &str) -> i32 {
     }
 }
 
+#[inline]
+fn u64_to_i32_checked(value: u64, context: &str) -> i32 {
+    match value.try_into() {
+        Ok(v) => v,
+        Err(_) => {
+            ::log::warn!(
+                "Download count overflow in {}: {} exceeds i32::MAX, truncating to i32::MAX",
+                context,
+                value
+            );
+            i32::MAX
+        }
+    }
+}
+
 use aquatic_udp_protocol::InfoHash;
 use parking_lot::RwLock;
 
@@ -372,7 +387,7 @@ impl<I: Ip> PeerMap<I> {
         };
 
         // Increment completed count on Completed event
-        if request.event == AnnounceEvent::Completed {
+        if request.event == AnnounceEvent::Completed.into() {
             match self {
                 Self::Small(peer_map) => peer_map.completed_count += 1,
                 Self::Large(peer_map) => peer_map.completed_count += 1,
@@ -476,7 +491,7 @@ impl<I: Ip> PeerMap<I> {
                 TorrentScrapeStatistics {
                     seeders: NumberOfPeers::new(usize_to_i32_checked(seeders, "scrape statistics seeders")),
                     leechers: NumberOfPeers::new(usize_to_i32_checked(leechers, "scrape statistics leechers")),
-                    completed: NumberOfDownloads::new(peer_map.completed_count),
+                    completed: NumberOfDownloads::new(u64_to_i32_checked(peer_map.completed_count, "scrape statistics completed")),
                 }
             }
             Self::Large(peer_map) => {
@@ -484,7 +499,7 @@ impl<I: Ip> PeerMap<I> {
                 TorrentScrapeStatistics {
                     seeders: NumberOfPeers::new(usize_to_i32_checked(seeders, "scrape statistics seeders")),
                     leechers: NumberOfPeers::new(usize_to_i32_checked(leechers, "scrape statistics leechers")),
-                    completed: NumberOfDownloads::new(peer_map.completed_count),
+                    completed: NumberOfDownloads::new(u64_to_i32_checked(peer_map.completed_count, "scrape statistics completed")),
                 }
             }
         }
