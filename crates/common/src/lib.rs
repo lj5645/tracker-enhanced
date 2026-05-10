@@ -13,6 +13,7 @@ pub mod client_ban;
 pub mod client_whitelist;
 pub mod request_filter;
 pub mod privileges;
+pub mod trusted_proxies;
 #[cfg(feature = "rustls")]
 pub mod rustls_config;
 

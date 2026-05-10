@@ -249,6 +249,14 @@ impl ScrapeRequest {
 
         Ok(())
     }
+
+    pub fn filter_info_hashes<F>(mut self, mut filter: F) -> Self
+    where
+        F: FnMut(&InfoHash) -> bool,
+    {
+        self.info_hashes.retain(filter);
+        self
+    }
 }
 
 #[derive(Debug)]

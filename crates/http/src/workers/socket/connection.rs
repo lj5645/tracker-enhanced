@@ -11,6 +11,7 @@ use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCach
 use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
+use aquatic_common::trusted_proxies::TrustedProxies;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
 use aquatic_http_protocol::request::{Request, ScrapeRequest};
@@ -96,8 +97,20 @@ pub(super) async fn run_connection(
         .peer_addr()
         .map_err(|err| ConnectionError::NoSocketPeerAddr(err.to_string()))?;
 
+    let trusted_proxies = state.trusted_proxies.load();
+    let is_trusted_proxy = config.trusted_proxies.enabled 
+        && trusted_proxies.is_trusted(remote_addr.ip());
+
     let opt_peer_addr = if config.network.runs_behind_reverse_proxy {
-        None
+        if config.trusted_proxies.enabled && !is_trusted_proxy {
+            log::warn!(
+                "Request from untrusted proxy IP: {}, using socket address instead of X-Forwarded-For",
+                remote_addr.ip()
+            );
+            Some(CanonicalSocketAddr::new(remote_addr))
+        } else {
+            None
+        }
     } else {
         Some(CanonicalSocketAddr::new(remote_addr))
     };
@@ -111,7 +124,7 @@ pub(super) async fn run_connection(
             .await
             .with_context(|| "tls accept")?;
 
-        let mut conn = Connection {
+        let conn = Connection::new(
             config,
             access_list_cache,
             ip_ban_list_cache,
@@ -123,15 +136,14 @@ pub(super) async fn run_connection(
             server_start_instant,
             peer_port,
             request_buffer,
-            request_buffer_position: 0,
             response_buffer,
             stream,
-            worker_index_string: worker_index.to_string(),
-        };
+            worker_index,
+        );
 
         conn.run(opt_peer_addr).await
     } else {
-        let mut conn = Connection {
+        let conn = Connection::new(
             config,
             access_list_cache,
             ip_ban_list_cache,
@@ -143,11 +155,10 @@ pub(super) async fn run_connection(
             server_start_instant,
             peer_port,
             request_buffer,
-            request_buffer_position: 0,
             response_buffer,
             stream,
-            worker_index_string: worker_index.to_string(),
-        };
+            worker_index,
+        );
 
         conn.run(opt_peer_addr).await
     }
@@ -175,6 +186,42 @@ impl<S> Connection<S>
 where
     S: futures::AsyncRead + futures::AsyncWrite + Unpin + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        config: Rc<Config>,
+        access_list_cache: AccessListCache,
+        ip_ban_list_cache: IpBanListCache,
+        client_ban_list_cache: ClientBanListCache,
+        client_whitelist_cache: ClientWhitelistCache,
+        request_filter: RequestFilter,
+        request_senders: Rc<Senders<ChannelRequest>>,
+        valid_until: Rc<RefCell<ValidUntil>>,
+        server_start_instant: ServerStartInstant,
+        peer_port: u16,
+        request_buffer: Box<[u8; REQUEST_BUFFER_SIZE]>,
+        response_buffer: Box<[u8; RESPONSE_BUFFER_SIZE]>,
+        stream: S,
+        worker_index: usize,
+    ) -> Self {
+        Self {
+            config,
+            access_list_cache,
+            ip_ban_list_cache,
+            client_ban_list_cache,
+            client_whitelist_cache,
+            request_filter,
+            request_senders,
+            valid_until,
+            server_start_instant,
+            peer_port,
+            request_buffer,
+            request_buffer_position: 0,
+            response_buffer,
+            stream,
+            worker_index_string: worker_index.to_string(),
+        }
+    }
+
     async fn run(
         &mut self,
         // Set unless running behind reverse proxy

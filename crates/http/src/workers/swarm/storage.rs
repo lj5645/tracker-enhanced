@@ -277,6 +277,14 @@ impl<I: Ip> TorrentData<I> {
             port: request.port,
         };
 
+        // Increment completed count on Completed event
+        if let AnnounceEvent::Completed = request.event {
+            match self {
+                Self::Small(peer_map) => peer_map.completed_count += 1,
+                Self::Large(peer_map) => peer_map.completed_count += 1,
+            }
+        }
+
         // Create the response before inserting the peer. This means that we
         // don't have to filter it out from the response peers, and that the
         // reported number of seeders/leechers will not include it
@@ -344,22 +352,33 @@ impl<I: Ip> TorrentData<I> {
     }
 
     fn scrape_statistics(&self) -> ScrapeStatistics {
-        let (seeders, leechers) = match self {
-            Self::Small(peer_map) => peer_map.num_seeders_leechers(),
-            Self::Large(peer_map) => peer_map.num_seeders_leechers(),
-        };
-
-        ScrapeStatistics {
-            complete: seeders,
-            incomplete: leechers,
-            downloaded: 0,
+        match self {
+            Self::Small(peer_map) => {
+                let (seeders, leechers) = peer_map.num_seeders_leechers();
+                ScrapeStatistics {
+                    complete: seeders,
+                    incomplete: leechers,
+                    downloaded: peer_map.completed_count,
+                }
+            }
+            Self::Large(peer_map) => {
+                let (seeders, leechers) = peer_map.num_seeders_leechers();
+                ScrapeStatistics {
+                    complete: seeders,
+                    incomplete: leechers,
+                    downloaded: peer_map.completed_count,
+                }
+            }
         }
     }
 }
 
 impl<I: Ip> Default for TorrentData<I> {
     fn default() -> Self {
-        Self::Small(SmallPeerMap(ArrayVec::default()))
+        Self::Small(SmallPeerMap {
+            peers: ArrayVec::default(),
+            completed_count: 0,
+        })
     }
 }
 
@@ -367,28 +386,31 @@ impl<I: Ip> Default for TorrentData<I> {
 ///
 /// On public open trackers, this is likely to be the majority of torrents.
 #[derive(Default, Debug)]
-pub struct SmallPeerMap<I: Ip>(ArrayVec<(ResponsePeer<I>, Peer), SMALL_PEER_MAP_CAPACITY>);
+pub struct SmallPeerMap<I: Ip> {
+    peers: ArrayVec<(ResponsePeer<I>, Peer), SMALL_PEER_MAP_CAPACITY>,
+    completed_count: u64,
+}
 
 impl<I: Ip> SmallPeerMap<I> {
     fn is_full(&self) -> bool {
-        self.0.is_full()
+        self.peers.is_full()
     }
 
     fn num_seeders_leechers(&self) -> (usize, usize) {
-        let seeders = self.0.iter().filter(|(_, p)| p.is_seeder).count();
-        let leechers = self.0.len() - seeders;
+        let seeders = self.peers.iter().filter(|(_, p)| p.is_seeder).count();
+        let leechers = self.peers.len() - seeders;
 
         (seeders, leechers)
     }
 
     fn insert(&mut self, key: ResponsePeer<I>, peer: Peer) {
-        self.0.push((key, peer));
+        self.peers.push((key, peer));
     }
 
     fn remove(&mut self, key: &ResponsePeer<I>) -> Option<Peer> {
-        for (i, (k, _)) in self.0.iter().enumerate() {
+        for (i, (k, _)) in self.peers.iter().enumerate() {
             if k == key {
-                return Some(self.0.remove(i).1);
+                return Some(self.peers.remove(i).1);
             }
         }
 
@@ -396,20 +418,24 @@ impl<I: Ip> SmallPeerMap<I> {
     }
 
     fn extract_response_peers(&self, max_num_peers_to_take: usize) -> Vec<ResponsePeer<I>> {
-        Vec::from_iter(self.0.iter().take(max_num_peers_to_take).map(|(k, _)| *k))
+        Vec::from_iter(self.peers.iter().take(max_num_peers_to_take).map(|(k, _)| *k))
     }
 
     fn clean_and_get_num_peers(&mut self, now: SecondsSinceServerStart) -> usize {
-        self.0.retain(|(_, peer)| peer.valid_until.valid(now));
+        self.peers.retain(|(_, peer)| peer.valid_until.valid(now));
 
-        self.0.len()
+        self.peers.len()
     }
 
     fn to_large(&self) -> LargePeerMap<I> {
         let (num_seeders, _) = self.num_seeders_leechers();
-        let peers = self.0.iter().copied().collect();
+        let peers = self.peers.iter().copied().collect();
 
-        LargePeerMap { peers, num_seeders }
+        LargePeerMap { 
+            peers, 
+            num_seeders,
+            completed_count: self.completed_count,
+        }
     }
 }
 
@@ -417,6 +443,7 @@ impl<I: Ip> SmallPeerMap<I> {
 pub struct LargePeerMap<I: Ip> {
     peers: IndexMap<ResponsePeer<I>, Peer>,
     num_seeders: usize,
+    completed_count: u64,
 }
 
 impl<I: Ip> LargePeerMap<I> {
@@ -510,9 +537,12 @@ impl<I: Ip> LargePeerMap<I> {
 
     fn try_shrink(&mut self) -> Option<SmallPeerMap<I>> {
         (self.peers.len() <= SMALL_PEER_MAP_CAPACITY).then(|| {
-            SmallPeerMap(ArrayVec::from_iter(
-                self.peers.iter().map(|(k, v)| (*k, *v)),
-            ))
+            SmallPeerMap {
+                peers: ArrayVec::from_iter(
+                    self.peers.iter().map(|(k, v)| (*k, *v)),
+                ),
+                completed_count: self.completed_count,
+            }
         })
     }
 }

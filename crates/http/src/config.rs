@@ -10,6 +10,7 @@ use aquatic_common::{
     client_ban::ClientBanConfig,
     client_whitelist::ClientWhitelistConfig,
     request_filter::RequestFilterConfig,
+    trusted_proxies::TrustedProxiesConfig,
 };
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,11 @@ pub struct Config {
     ///
     /// Filter malicious requests like SQL injection, path traversal, and crawlers.
     pub request_filter: RequestFilterConfig,
+    /// Trusted proxies configuration
+    ///
+    /// When running behind a reverse proxy, only trust X-Forwarded-For
+    /// headers from these IP addresses. This prevents IP spoofing attacks.
+    pub trusted_proxies: TrustedProxiesConfig,
     #[cfg(feature = "metrics")]
     pub metrics: MetricsConfig,
 }
@@ -89,6 +95,7 @@ impl Default for Config {
             client_ban: ClientBanConfig::default(),
             client_whitelist: ClientWhitelistConfig::default(),
             request_filter: RequestFilterConfig::default(),
+            trusted_proxies: TrustedProxiesConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),
         }

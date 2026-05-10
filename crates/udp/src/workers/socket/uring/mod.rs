@@ -530,8 +530,14 @@ impl SocketWorker {
                     .validator
                     .connection_id_valid(src, request.connection_id)
                 {
+                    let filtered_request = request.filter_info_hashes(|info_hash| {
+                        self.access_list_cache
+                            .load()
+                            .allows(access_list_mode, &info_hash.0)
+                    });
+                    
                     let response =
-                        Response::Scrape(self.shared_state.torrent_maps.scrape(request, src));
+                        Response::Scrape(self.shared_state.torrent_maps.scrape(filtered_request, src));
 
                     return Some((src, response));
                 }
