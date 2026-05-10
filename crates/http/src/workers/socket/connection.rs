@@ -11,7 +11,6 @@ use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCach
 use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
-use aquatic_common::trusted_proxies::TrustedProxies;
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
 use aquatic_http_protocol::request::{Request, ScrapeRequest};
@@ -124,7 +123,7 @@ pub(super) async fn run_connection(
             .await
             .with_context(|| "tls accept")?;
 
-        let conn = Connection::new(
+        let mut conn = Connection::new(
             config,
             access_list_cache,
             ip_ban_list_cache,
@@ -143,7 +142,7 @@ pub(super) async fn run_connection(
 
         conn.run(opt_peer_addr).await
     } else {
-        let conn = Connection::new(
+        let mut conn = Connection::new(
             config,
             access_list_cache,
             ip_ban_list_cache,

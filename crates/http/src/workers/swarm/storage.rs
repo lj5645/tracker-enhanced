@@ -18,6 +18,21 @@ use crate::config::Config;
 
 const SMALL_PEER_MAP_CAPACITY: usize = 4;
 
+#[inline]
+fn u64_to_usize_checked(value: u64, context: &str) -> usize {
+    match value.try_into() {
+        Ok(v) => v,
+        Err(_) => {
+            ::log::warn!(
+                "Download count overflow in {}: {} exceeds usize::MAX, truncating to usize::MAX",
+                context,
+                value
+            );
+            usize::MAX
+        }
+    }
+}
+
 pub trait Ip: ::std::fmt::Debug + Copy + Eq + ::std::hash::Hash {}
 
 impl Ip for Ipv4Addr {}
@@ -358,7 +373,7 @@ impl<I: Ip> TorrentData<I> {
                 ScrapeStatistics {
                     complete: seeders,
                     incomplete: leechers,
-                    downloaded: peer_map.completed_count,
+                    downloaded: u64_to_usize_checked(peer_map.completed_count, "scrape statistics completed"),
                 }
             }
             Self::Large(peer_map) => {
@@ -366,7 +381,7 @@ impl<I: Ip> TorrentData<I> {
                 ScrapeStatistics {
                     complete: seeders,
                     incomplete: leechers,
-                    downloaded: peer_map.completed_count,
+                    downloaded: u64_to_usize_checked(peer_map.completed_count, "scrape statistics completed"),
                 }
             }
         }
