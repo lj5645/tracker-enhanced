@@ -4,6 +4,7 @@ use aquatic_common::{
     ip_ban::update_ip_ban_list,
     client_ban::update_client_ban_list,
     client_whitelist::update_client_whitelist,
+    trusted_proxies::update_trusted_proxies,
     privileges::PrivilegeDropper,
     rustls_config::create_rustls_config,
     ServerStartInstant, WorkerType,
@@ -44,6 +45,7 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     update_ip_ban_list(&config.ip_ban, &state.ip_ban_list)?;
     update_client_ban_list(&config.client_ban, &state.client_ban_list)?;
     update_client_whitelist(&config.client_whitelist, &state.client_whitelist)?;
+    update_trusted_proxies(&config.trusted_proxies, &state.trusted_proxies)?;
 
     let request_mesh_builder = MeshBuilder::partial(
         config.socket_workers + config.swarm_workers,
@@ -176,6 +178,7 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
                             let _ = update_ip_ban_list(&config.ip_ban, &state.ip_ban_list);
                             let _ = update_client_ban_list(&config.client_ban, &state.client_ban_list);
                             let _ = update_client_whitelist(&config.client_whitelist, &state.client_whitelist);
+                            let _ = update_trusted_proxies(&config.trusted_proxies, &state.trusted_proxies);
                         }
                         _ => unreachable!(),
                     }

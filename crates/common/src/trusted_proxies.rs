@@ -1,7 +1,10 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use anyhow::Context;
 use aquatic_toml_config::TomlConfig;
+use arc_swap::ArcSwap;
 use serde::Deserialize;
 use ip_network::IpNetwork;
 use ip_network_table::IpNetworkTable;
@@ -81,6 +84,48 @@ impl TrustedProxies {
         }
         self.table.longest_match(addr).is_some()
     }
+
+    pub fn len(&self) -> usize {
+        self.table.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.is_empty()
+    }
+}
+
+pub type TrustedProxiesArcSwap = ArcSwap<TrustedProxies>;
+
+pub fn update_trusted_proxies(
+    config: &TrustedProxiesConfig,
+    trusted_proxies: &Arc<TrustedProxiesArcSwap>,
+) -> anyhow::Result<()> {
+    if config.enabled && !config.path.as_os_str().is_empty() {
+        let content = std::fs::read_to_string(&config.path)
+            .with_context(|| format!("Failed to read trusted proxies file: {:?}", config.path))?;
+        
+        let mut networks = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match line.parse::<IpNetwork>() {
+                Ok(network) => networks.push(network),
+                Err(err) => {
+                    ::log::warn!("Failed to parse trusted proxy entry '{}': {}", line, err);
+                }
+            }
+        }
+        
+        let proxies = TrustedProxies::from_iter(networks);
+        trusted_proxies.store(Arc::new(proxies));
+        ::log::info!("Trusted proxies updated ({} entries)", trusted_proxies.load().len());
+    } else {
+        trusted_proxies.store(Arc::new(TrustedProxies::default()));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
