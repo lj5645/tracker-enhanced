@@ -86,7 +86,7 @@ impl TrustedProxies {
     }
 
     pub fn len(&self) -> usize {
-        self.table.len()
+        self.table.iter().count()
     }
 
     pub fn is_empty(&self) -> bool {
