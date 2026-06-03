@@ -112,37 +112,52 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: Tracker Enhanced ${{ github.event.inputs.version }}
+        name: Aquatic Tracker 增强版 ${{ github.event.inputs.version }}
         body: |
-          ## Aquatic Tracker Enhanced Version
-          
-          ### Features
-          - IP Ban with CIDR range support
-          - Client Ban with peer_id pattern matching
-          - Client Whitelist with User-Agent filtering
-          - Request Filter for SQL injection, path traversal, and crawlers
-          - Hot reload support via SIGUSR1/SIGUSR2
-          - Prometheus metrics support
-          
-          ### Binaries
-          | Platform | File |
-          |----------|------|
+          ## Aquatic BitTorrent Tracker 增强版
+
+          基于 Aquatic 的高性能 BitTorrent Tracker，新增安全防护和性能优化功能。
+
+          ### 功能特性
+          - IP 封禁（支持 CIDR 网段）
+          - 客户端封禁（吸血客户端拦截）
+          - 客户端白名单（User-Agent 过滤）
+          - 请求过滤（SQL 注入、路径遍历、爬虫拦截）
+          - TCP Keepalive（死连接快速清理）
+          - 连接数限制（防止连接风暴）
+          - Socket 缓冲区优化（防止高负载丢包）
+          - CPU 绑定（可选，需要 hwloc）
+          - 热重载配置（SIGUSR1/SIGUSR2）
+          - Prometheus 指标导出
+
+          ### 下载文件
+          | 平台 | 文件 |
+          |------|------|
           | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64 |
-          | Windows x86_64 | aquatic_udp-windows-x86_64.exe (if available) |
-          
-          ### Usage
+          | Windows x86_64 | aquatic_udp-windows-x86_64.exe（如可用） |
+
+          ### 使用方法
           ```bash
           # Linux
           chmod +x aquatic_*
-          ./aquatic_http -c aquatic-http.toml
-          
-          # Windows (only aquatic_udp available)
+          ./aquatic_http-linux-x86_64 -c aquatic-http.toml
+
+          # Windows（仅 aquatic_udp 可用）
           .\aquatic_udp.exe -c aquatic-udp.toml
           ```
-          
-          ### Note
-          - aquatic_http only supports Linux (requires glommio/io_uring)
-          - aquatic_udp supports both Linux and Windows
+
+          ### 运行时依赖
+          - HTTP Tracker 需要 Linux 5.8+（依赖 glommio/io_uring）
+          - 如启用 CPU 绑定功能，需安装: `sudo apt-get install libhwloc15`
+          - UDP Tracker 支持 Linux 和 Windows
+
+          ### 系统优化建议
+          ```bash
+          ulimit -n 1048576
+          sudo sysctl -w fs.file-max=1048576
+          sudo sysctl -w net.core.rmem_max=8388608
+          sudo sysctl -w net.core.wmem_max=8388608
+          ```
         draft: false
         prerelease: ${{ github.event.inputs.prerelease == 'true' }}
         fail_on_unmatched_files: false

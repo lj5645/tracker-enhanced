@@ -14,7 +14,7 @@ socket_workers = 6
 swarm_workers = 2
 
 # 日志级别: error, warn, info, debug, trace
-log_level = "info"
+log_level = "warn"
 
 # ============================================================
 # 网络配置
@@ -100,7 +100,7 @@ tcp_keepalive_probes = 3
 max_scrape_torrents = 100
 
 # Announce 请求中最大返回 peer 数量
-max_peers = 50
+max_peers = 100
 
 # Peer 重新 announce 间隔（秒）
 peer_announce_interval = 120
@@ -213,7 +213,7 @@ filter_path_traversal = true
 
 # 过滤爬虫和扫描器
 # 检测 User-Agent 中的: bot, crawler, spider, curl, wget, python-requests 等
-filter_crawlers = false
+filter_crawlers = true
 
 # 过滤私有 IP 地址
 # 阻止来自私有 IP 的请求: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 等

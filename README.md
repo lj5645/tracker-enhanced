@@ -1,79 +1,274 @@
-# aquatic: high-performance open BitTorrent tracker
+# Aquatic BitTorrent Tracker - 增强版
 
-[![CI](https://github.com/greatest-ape/aquatic/actions/workflows/ci.yml/badge.svg)](https://github.com/greatest-ape/aquatic/actions/workflows/ci.yml)
+基于 [Aquatic](https://github.com/greatest-ape/aquatic) 项目增强的高性能开源 BitTorrent Tracker。
 
-High-performance open BitTorrent tracker, consisting
-of sub-implementations for different protocols:
+## 功能概览
 
-[aquatic_udp]: ./crates/udp
-[aquatic_http]: ./crates/http
-[aquatic_ws]: ./crates/ws
+| 模块 | 协议 | 系统要求 |
+|------|------|----------|
+| aquatic_udp | BitTorrent over UDP | Unix-like |
+| aquatic_http | BitTorrent over HTTP（可选 TLS） | Linux 5.8+ |
+| aquatic_ws | WebTorrent（可选 TLS） | Linux 5.8+ |
 
-| Name           | Protocol                                  | OS requirements    |
-|----------------|-------------------------------------------|--------------------|
-| [aquatic_udp]  | BitTorrent over UDP                       | Unix-like          |
-| [aquatic_http] | BitTorrent over HTTP, optionally over TLS | Linux 5.8 or later |
-| [aquatic_ws]   | WebTorrent, optionally over TLS           | Linux 5.8 or later |
+### 核心特性
 
-Features at a glance:
+- 多线程设计，可处理大规模流量
+- 全部数据存储在内存中（无需数据库）
+- 同时支持 IPv4 和 IPv6
+- 支持禁止/允许 info hash
+- Prometheus 指标导出
+- 自动化 CI 全流程文件传输测试
 
-- Multithreaded design for handling large amounts of traffic
-- All data is stored in-memory (no database needed)
-- IPv4 and IPv6 support
-- Supports forbidding/allowing info hashes
-- Prometheus metrics
-- Automated CI testing of full file transfers
+### 增强功能
 
-Known users:
+- **IP 封禁** - 支持单个 IP 和 CIDR 网段封禁
+- **客户端封禁** - 根据 peer_id 模式封禁吸血客户端
+- **客户端白名单** - 仅允许指定 User-Agent 的客户端访问
+- **请求过滤** - 自动拦截 SQL 注入、路径遍历、爬虫等恶意请求
+- **TCP Keepalive** - 快速检测和清理死连接
+- **连接数限制** - 防止连接风暴导致内存耗尽
+- **Socket 缓冲区** - 可配置的收发缓冲区大小，防止高负载丢包
+- **CPU 绑定** - 可选的工作线程 CPU 核心绑定（需要 hwloc）
+- **热重载** - 通过信号重载配置，无需重启服务
 
-- [explodie.org public tracker](https://explodie.org/opentracker.html) (`udp://explodie.org:6969`), typically [serving ~100,000 requests per second](https://explodie.org/tracker-stats.html)
-- [tracker.webtorrent.dev](https://tracker.webtorrent.dev) (`wss://tracker.webtorrent.dev`)
+## 快速开始
 
-## Performance of the UDP implementation
+### 1. 下载二进制文件
 
-![UDP BitTorrent tracker throughput](./documents/aquatic-udp-load-test-2024-02-10.png)
+从 [GitHub Releases](https://github.com/lj5645/tracker-enhanced/releases) 下载最新版本。
 
-More benchmark details are available [here](./documents/aquatic-udp-load-test-2024-02-10.md).
+### 2. 安装运行时依赖（仅 Linux HTTP 模式）
 
-## Usage
+```bash
+# 如果启用了 CPU 绑定功能（cpu-pinning feature）
+sudo apt-get install -y libhwloc15
 
-Please refer to the README pages for the respective implementations listed in
-the table above.
+# 如果未启用 CPU 绑定，无需额外依赖
+```
 
-## Auxiliary software
+### 3. 配置
 
-There are also some auxiliary applications and libraries.
+```bash
+# 编辑配置文件
+vim aquatic-http.toml
+```
 
-### Tracker load testing
+### 4. 运行
 
-Load test applications for aquatic and other trackers, useful for profiling:
+```bash
+# HTTP Tracker（仅 Linux）
+chmod +x aquatic_http-linux-x86_64
+./aquatic_http-linux-x86_64 -c aquatic-http.toml
 
-- [aquatic_udp_load_test](./crates/udp_load_test/) - BitTorrent over UDP
-- [aquatic_http_load_test](./crates/http_load_test/) - BitTorrent over HTTP
-- [aquatic_ws_load_test](./crates/ws_load_test/) - WebTorrent
+# UDP Tracker（Linux / Windows）
+chmod +x aquatic_udp-linux-x86_64
+./aquatic_udp-linux-x86_64 -c aquatic-udp.toml
+```
 
-Automated benchmarking of aquatic and other trackers: [aquatic_bencher](./crates/bencher/)
+### 5. 系统优化（推荐）
 
-### Client ⇄ tracker communication
+```bash
+# 增大文件描述符限制
+ulimit -n 1048576
+sudo sysctl -w fs.file-max=1048576
 
-Libraries for communication between clients and trackers:
+# 增大 Socket 缓冲区限制
+sudo sysctl -w net.core.rmem_max=8388608
+sudo sysctl -w net.core.wmem_max=8388608
+```
 
-- [aquatic_udp_protocol](./crates/udp_protocol/) - BitTorrent over UDP
-- [aquatic_http_protocol](./crates/http_protocol/) - BitTorrent over HTTP
-- [aquatic_ws_protocol](./crates/ws_protocol/) - WebTorrent
+## 增强功能详细说明
 
-### Other
+### IP 封禁
 
-- [aquatic_peer_id](./crates/peer_id/) - extract BitTorrent client information
-  from peer identifiers
+支持封禁特定 IP 地址或 CIDR 范围。
 
-## Copyright and license
+**配置文件**: `ip-ban-list.txt`
 
-Copyright (c) Joakim Frostegård
+```
+# 封禁单个 IP
+192.168.1.100
 
-Distributed under the terms of the Apache License, Version 2.0. Please refer to
-the `LICENSE` file in the repository root directory for details.
+# 封禁 IP 段
+10.0.0.0/8
 
-## Trivia
+# 封禁 IPv6 范围
+2001:db8::/32
+```
 
-The tracker is called aquatic because it thrives under a torrent of bits ;-)
+**配置项**:
+
+```toml
+[ip_ban]
+mode = "on"
+path = "./ip-ban-list.txt"
+```
+
+### 客户端封禁
+
+支持根据 peer_id 模式封禁特定 BitTorrent 客户端（如迅雷、QQ旋风等吸血客户端）。
+
+**配置文件**: `client-ban-list.txt`
+
+```
+# 封禁迅雷
+-xl
+-sd
+
+# 封禁 QQ 旋风
+-qd
+
+# 封禁 BitComet
+-bn
+-bc
+```
+
+**配置项**:
+
+```toml
+[client_ban]
+mode = "on"
+path = "./client-ban-list.txt"
+```
+
+### 客户端白名单
+
+只允许特定的 BitTorrent 客户端访问，不在白名单中的客户端将被拒绝。
+
+**配置文件**: `client-whitelist.txt`
+
+```
+utorrent
+transmission
+qbittorrent
+deluge
+libtorrent
+```
+
+**配置项**:
+
+```toml
+[client_whitelist]
+mode = "on"
+path = "./client-whitelist.txt"
+```
+
+匹配规则：使用包含匹配，大小写不敏感。
+
+### 请求过滤
+
+自动过滤恶意请求：
+
+| 过滤项 | 说明 |
+|--------|------|
+| `filter_sql_injection` | 检测 URI 中的 SQL 关键字 |
+| `filter_path_traversal` | 检测 `../` 及编码变体 |
+| `filter_crawlers` | 检测爬虫 User-Agent（bot, curl, wget, python-requests 等） |
+| `filter_private_ips` | 阻止私有 IP 地址请求 |
+| `filter_missing_user_agent` | 阻止无 User-Agent 的请求 |
+
+> **注意**: `filter_crawlers = true` 会导致 newTrackon 等 Tracker 检测网站显示 "Request filtered"，因为它们使用 python-requests 发请求。如需被检测网站识别，请设为 `false`。
+
+### 性能优化配置
+
+```toml
+[network]
+# TCP 连接等待队列
+tcp_backlog = 4096
+
+# Socket 缓冲区大小（字节），防止高负载丢包
+socket_recv_buffer_size = 2097152
+socket_send_buffer_size = 2097152
+
+# 每个 socket worker 最大连接数，0 表示不限制
+max_connections_per_worker = 100000
+
+# TCP Keepalive，快速清理死连接
+tcp_keepalive = true
+tcp_keepalive_idle_secs = 60
+tcp_keepalive_interval_secs = 10
+tcp_keepalive_probes = 3
+```
+
+### CPU 绑定
+
+将工作线程绑定到特定 CPU 核心，提高缓存命中率和减少上下文切换。需要安装 hwloc 运行时库。
+
+```toml
+[cpu_pinning]
+active = false          # 启用前需安装: sudo apt-get install libhwloc15
+direction = "ascending"
+core_offset = 0
+```
+
+## 热重载配置
+
+通过信号热重载配置，无需重启服务：
+
+| 信号 | 功能 |
+|------|------|
+| `SIGUSR1` | 重载访问列表和 TLS 证书 |
+| `SIGUSR2` | 重载 IP 封禁、客户端封禁、客户端白名单、可信代理列表 |
+
+```bash
+# 重载封禁和白名单列表
+kill -SIGUSR2 $(pgrep aquatic_http)
+```
+
+## 监控
+
+内置 Prometheus 指标导出，支持 Grafana 可视化。
+
+```toml
+[metrics]
+run_prometheus_endpoint = true
+prometheus_endpoint_address = "0.0.0.0:9000"
+torrent_count_update_interval = 300
+```
+
+## 编译
+
+```bash
+# 安装依赖
+sudo apt-get install -y cmake build-essential libhwloc-dev
+
+# 编译 HTTP Tracker（含 CPU 绑定功能）
+cargo build --release -p aquatic_http --features "metrics,cpu-pinning"
+
+# 编译 HTTP Tracker（不含 CPU 绑定功能，无需 hwloc）
+cargo build --release -p aquatic_http --features metrics
+
+# 编译 UDP Tracker
+cargo build --release -p aquatic_udp --features metrics
+```
+
+## 支持的 BEP 协议
+
+| BEP | 名称 | 支持情况 |
+|-----|------|----------|
+| BEP-0003 | BitTorrent 协议 | 支持 |
+| BEP-0007 | IPv6 Tracker 扩展 | 支持 |
+| BEP-0015 | UDP Tracker 协议 | 支持 |
+| BEP-0023 | Tracker 返回 Compact Peer 列表 | 支持 |
+| BEP-0048 | Tracker Polling Interval | 支持 |
+
+## 项目结构
+
+```
+crates/
+├── common/              # 公共模块
+│   └── src/
+│       ├── ip_ban.rs        # IP 封禁
+│       ├── client_ban.rs    # 客户端封禁
+│       ├── client_whitelist.rs  # 客户端白名单
+│       ├── request_filter.rs    # 请求过滤
+│       ├── trusted_proxies.rs   # 可信代理
+│       └── cpu_pinning.rs       # CPU 绑定
+├── http/                # HTTP Tracker
+├── udp/                 # UDP Tracker
+└── ws/                  # WebTorrent Tracker
+```
+
+## 许可证
+
+基于 Aquatic 项目（Apache-2.0），增强代码同样遵循 Apache-2.0 许可证。
