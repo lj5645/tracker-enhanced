@@ -11,6 +11,7 @@ use aquatic_common::{
     client_whitelist::ClientWhitelistConfig,
     request_filter::RequestFilterConfig,
     trusted_proxies::TrustedProxiesConfig,
+    cpu_pinning::asc::CpuPinningConfigAsc,
 };
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,11 @@ pub struct Config {
     /// When running behind a reverse proxy, only trust X-Forwarded-For
     /// headers from these IP addresses. This prevents IP spoofing attacks.
     pub trusted_proxies: TrustedProxiesConfig,
+    /// CPU pinning configuration
+    ///
+    /// Pin workers to specific CPU cores for better cache locality and
+    /// reduced context switching. Requires hwloc (`apt-get install libhwloc-dev`).
+    pub cpu_pinning: CpuPinningConfigAsc,
     #[cfg(feature = "metrics")]
     pub metrics: MetricsConfig,
 }
@@ -96,6 +102,7 @@ impl Default for Config {
             client_whitelist: ClientWhitelistConfig::default(),
             request_filter: RequestFilterConfig::default(),
             trusted_proxies: TrustedProxiesConfig::default(),
+            cpu_pinning: CpuPinningConfigAsc::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),
         }
@@ -171,6 +178,38 @@ pub struct NetworkConfig {
     /// double-stack sockets (that is, sockets that receive both IPv4 and IPv6
     /// packets).
     pub set_only_ipv6: bool,
+    /// Size of TCP socket receive buffer (SO_RCVBUF). Use 0 for OS default.
+    ///
+    /// Increasing this can help prevent packet loss under high load.
+    /// On Linux, you may need to increase net.core.rmem_max first:
+    /// $ sudo sysctl -w net.core.rmem_max=8388608
+    pub socket_recv_buffer_size: usize,
+    /// Size of TCP socket send buffer (SO_SNDBUF). Use 0 for OS default.
+    ///
+    /// Increasing this can help prevent packet loss under high load.
+    /// On Linux, you may need to increase net.core.wmem_max first:
+    /// $ sudo sysctl -w net.core.wmem_max=8388608
+    pub socket_send_buffer_size: usize,
+    /// Maximum number of simultaneous connections per socket worker.
+    ///
+    /// Use 0 for unlimited. When the limit is reached, new connections
+    /// will be accepted but immediately closed. This prevents out-of-memory
+    /// errors during connection storms.
+    pub max_connections_per_worker: usize,
+    /// Enable TCP keepalive on accepted connections.
+    ///
+    /// Helps detect and clean up dead connections faster than relying
+    /// solely on the application-level idle timeout.
+    pub tcp_keepalive: bool,
+    /// TCP keepalive idle time in seconds (time before first probe).
+    /// Only used if tcp_keepalive is true.
+    pub tcp_keepalive_idle_secs: u64,
+    /// TCP keepalive interval in seconds (time between probes).
+    /// Only used if tcp_keepalive is true.
+    pub tcp_keepalive_interval_secs: u64,
+    /// Number of keepalive probes before considering connection dead.
+    /// Only used if tcp_keepalive is true.
+    pub tcp_keepalive_probes: u32,
 }
 
 impl Default for NetworkConfig {
@@ -189,6 +228,13 @@ impl Default for NetworkConfig {
             reverse_proxy_ip_header_name: "X-Forwarded-For".into(),
             reverse_proxy_ip_header_format: Default::default(),
             set_only_ipv6: true,
+            socket_recv_buffer_size: 2_097_152,
+            socket_send_buffer_size: 2_097_152,
+            max_connections_per_worker: 100_000,
+            tcp_keepalive: true,
+            tcp_keepalive_idle_secs: 60,
+            tcp_keepalive_interval_secs: 10,
+            tcp_keepalive_probes: 3,
         }
     }
 }

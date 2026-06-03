@@ -133,6 +133,27 @@ impl ListenerState {
         while let Some(stream) = incoming.next().await {
             match stream {
                 Ok(stream) => {
+                    // Check connection limit
+                    let current_connections = self.connection_handles.borrow().len();
+                    if self.config.network.max_connections_per_worker > 0
+                        && current_connections >= self.config.network.max_connections_per_worker
+                    {
+                        ::log::warn!(
+                            "Connection limit reached ({}/{}), rejecting new connection",
+                            current_connections,
+                            self.config.network.max_connections_per_worker
+                        );
+                        // Connection will be dropped when stream goes out of scope
+                        continue;
+                    }
+
+                    // Set TCP keepalive on the accepted stream
+                    if self.config.network.tcp_keepalive {
+                        if let Err(err) = set_tcp_keepalive(&stream, &self.config) {
+                            ::log::debug!("Failed to set TCP keepalive: {}", err);
+                        }
+                    }
+
                     let (close_conn_sender, close_conn_receiver) = new_bounded(1);
 
                     let valid_until = Rc::new(RefCell::new(ValidUntil::new(
@@ -278,6 +299,19 @@ fn create_tcp_listener(
         .set_reuse_port(true)
         .with_context(|| "socket: set reuse port")?;
 
+    // Set socket buffer sizes
+    if config.network.socket_recv_buffer_size > 0 {
+        socket
+            .set_recv_buffer_size(config.network.socket_recv_buffer_size)
+            .with_context(|| "socket: set recv buffer size")?;
+    }
+
+    if config.network.socket_send_buffer_size > 0 {
+        socket
+            .set_send_buffer_size(config.network.socket_send_buffer_size)
+            .with_context(|| "socket: set send buffer size")?;
+    }
+
     socket
         .bind(&address.into())
         .with_context(|| format!("socket: bind to {}", address))?;
@@ -298,4 +332,66 @@ fn peer_addr_to_ip_version_str(addr: &CanonicalSocketAddr) -> &'static str {
     } else {
         "6"
     }
+}
+
+fn set_tcp_keepalive(stream: &TcpStream, config: &Config) -> anyhow::Result<()> {
+    use std::os::unix::prelude::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+
+    let idle_secs = config.network.tcp_keepalive_idle_secs;
+    let interval_secs = config.network.tcp_keepalive_interval_secs;
+    let probes = config.network.tcp_keepalive_probes;
+
+    unsafe {
+        let enable: libc::c_int = 1;
+        let result = libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            &enable as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        if result != 0 {
+            return Err(anyhow::anyhow!("set SO_KEEPALIVE failed"));
+        }
+
+        let idle: libc::c_int = idle_secs as libc::c_int;
+        let result = libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPIDLE,
+            &idle as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        if result != 0 {
+            return Err(anyhow::anyhow!("set TCP_KEEPIDLE failed"));
+        }
+
+        let interval: libc::c_int = interval_secs as libc::c_int;
+        let result = libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPINTVL,
+            &interval as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        if result != 0 {
+            return Err(anyhow::anyhow!("set TCP_KEEPINTVL failed"));
+        }
+
+        let cnt: libc::c_int = probes as libc::c_int;
+        let result = libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPCNT,
+            &cnt as *const _ as *const _,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        if result != 0 {
+            return Err(anyhow::anyhow!("set TCP_KEEPCNT failed"));
+        }
+    }
+
+    Ok(())
 }

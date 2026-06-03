@@ -7,8 +7,11 @@ use aquatic_common::{
     trusted_proxies::update_trusted_proxies,
     privileges::PrivilegeDropper,
     rustls_config::create_rustls_config,
-    ServerStartInstant, WorkerType,
+    WorkerType,
+    ServerStartInstant,
 };
+#[cfg(feature = "cpu-pinning")]
+use aquatic_common::cpu_pinning::{pin_current_if_configured_to, WorkerIndex};
 use arc_swap::ArcSwap;
 use common::State;
 use glommio::{channels::channel_mesh::MeshBuilder, prelude::*};
@@ -28,7 +31,7 @@ mod workers;
 pub const APP_NAME: &str = "aquatic_http: HTTP BitTorrent tracker";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const SHARED_CHANNEL_SIZE: usize = 1024;
+const SHARED_CHANNEL_SIZE: usize = 4096;
 
 pub fn run(config: Config) -> ::anyhow::Result<()> {
     let mut signals = Signals::new([SIGUSR1, SIGUSR2])?;
@@ -88,6 +91,14 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
         let handle = Builder::new()
             .name(format!("socket-{:02}", i + 1))
             .spawn(move || {
+                #[cfg(feature = "cpu-pinning")]
+                pin_current_if_configured_to(
+                    &config.cpu_pinning,
+                    config.socket_workers,
+                    config.swarm_workers,
+                    WorkerIndex::SocketWorker(i),
+                );
+
                 LocalExecutorBuilder::default()
                     .make()
                     .map_err(|err| anyhow::anyhow!("Spawning executor failed: {:#}", err))?
@@ -114,6 +125,14 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
         let handle = Builder::new()
             .name(format!("swarm-{:02}", i + 1))
             .spawn(move || {
+                #[cfg(feature = "cpu-pinning")]
+                pin_current_if_configured_to(
+                    &config.cpu_pinning,
+                    config.socket_workers,
+                    config.swarm_workers,
+                    WorkerIndex::SwarmWorker(i),
+                );
+
                 LocalExecutorBuilder::default()
                     .make()
                     .map_err(|err| anyhow::anyhow!("Spawning executor failed: {:#}", err))?

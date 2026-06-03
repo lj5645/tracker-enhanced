@@ -137,7 +137,7 @@ impl Default for NetworkConfig {
             #[cfg(feature = "io-uring")]
             use_io_uring: true,
             #[cfg(feature = "io-uring")]
-            ring_size: 128,
+            ring_size: 1024,
         }
     }
 }

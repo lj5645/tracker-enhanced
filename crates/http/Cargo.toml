@@ -25,6 +25,8 @@ metrics = ["dep:metrics"]
 #
 # Requires cmake and a C compiler
 mimalloc = ["dep:mimalloc"]
+# Experimental CPU pinning support. Requires hwloc (apt-get install libhwloc-dev)
+cpu-pinning = ["aquatic_common/cpu-pinning"]
 
 [dependencies]
 aquatic_common = { workspace = true, features = ["rustls"] }

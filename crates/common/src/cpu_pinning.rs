@@ -96,6 +96,7 @@ impl WorkerIndex {
 /// Pin current thread to a suitable core
 ///
 /// Requires hwloc (`apt-get install libhwloc-dev`)
+#[cfg(feature = "cpu-pinning")]
 pub fn pin_current_if_configured_to<C: CpuPinningConfig>(
     config: &C,
     socket_workers: usize,
@@ -149,7 +150,7 @@ pub fn pin_current_if_configured_to<C: CpuPinningConfig>(
 /// More Information:
 ///   - https://talawah.io/blog/extreme-http-performance-tuning-one-point-two-million/
 ///   - https://www.kernel.org/doc/Documentation/networking/scaling.txt
-///   - https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/6/html/performance_tuning_guide/network-rps
+///   - https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_6/html/performance_tuning_guide/network-rps
 #[cfg(target_os = "linux")]
 pub fn socket_attach_cbpf<S: ::std::os::unix::prelude::AsRawFd>(
     socket: &S,

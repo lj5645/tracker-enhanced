@@ -33,7 +33,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake build-essential
+        sudo apt-get install -y cmake build-essential libhwloc-dev
     
     - name: Build aquatic_udp
       run: |
@@ -43,7 +43,7 @@ jobs:
     
     - name: Build aquatic_http
       run: |
-        cargo build --release -p aquatic_http
+        cargo build --release -p aquatic_http --features cpu-pinning
         strip target/release/aquatic_http
         mv target/release/aquatic_http target/release/aquatic_http-linux-x86_64
     

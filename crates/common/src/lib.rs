@@ -6,7 +6,6 @@ use ahash::RandomState;
 
 pub mod access_list;
 pub mod cli;
-#[cfg(feature = "cpu-pinning")]
 pub mod cpu_pinning;
 pub mod ip_ban;
 pub mod client_ban;
