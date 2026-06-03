@@ -68,13 +68,8 @@ chmod +x aquatic_udp-linux-x86_64
 ### 5. 系统优化（推荐）
 
 ```bash
-# 增大文件描述符限制
-ulimit -n 1048576
-sudo sysctl -w fs.file-max=1048576
-
-# 增大 Socket 缓冲区限制
-sudo sysctl -w net.core.rmem_max=8388608
-sudo sysctl -w net.core.wmem_max=8388608
+# 一键优化（自动检测系统、网卡、CPU，配置 sysctl/ulimit/RPS/开机自启）
+bash scripts/optimize.sh
 ```
 
 ## 增强功能详细说明
@@ -171,32 +166,21 @@ path = "./client-whitelist.txt"
 
 ### 性能优化配置
 
+以下配置项在 `aquatic-http.toml` 中设置，优化脚本会根据硬件自动生成推荐值：
+
 ```toml
 [network]
-# TCP 连接等待队列
 tcp_backlog = 4096
-
-# Socket 缓冲区大小（字节），防止高负载丢包
-socket_recv_buffer_size = 2097152
-socket_send_buffer_size = 2097152
-
-# 每个 socket worker 最大连接数，0 表示不限制
-max_connections_per_worker = 100000
-
-# TCP Keepalive，快速清理死连接
-tcp_keepalive = true
+socket_recv_buffer_size = 2097152    # Socket 接收缓冲区（字节）
+socket_send_buffer_size = 2097152    # Socket 发送缓冲区（字节）
+max_connections_per_worker = 100000  # 每 worker 最大连接数，0 不限制
+tcp_keepalive = true                 # TCP Keepalive
 tcp_keepalive_idle_secs = 60
 tcp_keepalive_interval_secs = 10
 tcp_keepalive_probes = 3
-```
 
-### CPU 绑定
-
-将工作线程绑定到特定 CPU 核心，提高缓存命中率和减少上下文切换。需要安装 hwloc 运行时库。
-
-```toml
 [cpu_pinning]
-active = false          # 启用前需安装: sudo apt-get install libhwloc15
+active = false          # 启用需安装 hwloc: sudo apt-get install libhwloc15
 direction = "ascending"
 core_offset = 0
 ```
