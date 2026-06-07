@@ -347,7 +347,7 @@ struct ConnectionReader<S> {
 
 impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
     /// Returns true if the request should be blocked
-    fn run_security_checks(&self, peer_id_opt: Option<&PeerId>) -> bool {
+    fn run_security_checks(&mut self, peer_id_opt: Option<&PeerId>) -> bool {
         // 1. IP ban check
         if self.config.ip_ban.mode.is_on() {
             if self.ip_ban_list_cache.load().is_banned(&self.peer_ip) {

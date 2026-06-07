@@ -1,5 +1,11 @@
 # 更新日志
 
+## v1.3.8
+
+### 修复
+
+- **修复 `run_security_checks` 不可变引用编译错误**：`arc_swap::Cache::load()` 需要 `&mut self`，但 UDP（mio/uring）和 WS 的 `run_security_checks` 方法签名使用 `&self`，导致编译失败。已改为 `&mut self`
+
 ## v1.3.7
 
 ### 修复

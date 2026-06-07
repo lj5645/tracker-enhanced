@@ -497,7 +497,7 @@ impl SocketWorker {
     }
 
     /// Returns true if the request should be blocked
-    fn run_security_checks(&self, src: &CanonicalSocketAddr, peer_id_opt: Option<&PeerId>) -> bool {
+    fn run_security_checks(&mut self, src: &CanonicalSocketAddr, peer_id_opt: Option<&PeerId>) -> bool {
         let peer_ip = src.get().ip();
 
         // 1. IP ban check
