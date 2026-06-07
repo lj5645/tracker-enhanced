@@ -1,5 +1,11 @@
 # 更新日志
 
+## v1.3.9
+
+### 修复
+
+- **修复 HTTP socket worker borrow-after-move 错误**：`self.state` 在 `run_connection` 调用中被 move 后，又尝试访问 `self.state.auto_ban_tracker`。改为在 move 之前先 clone `auto_ban_tracker`
+
 ## v1.3.8
 
 ### 修复

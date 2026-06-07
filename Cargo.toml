@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.3.8"
+version = "1.3.9"
 authors = ["Joakim Frostegård <joakim.frostegard@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"
@@ -28,17 +28,17 @@ readme = "./README.md"
 rust-version = "1.64"
 
 [workspace.dependencies]
-aquatic_common = { version = "1.3.8", path = "./crates/common" }
-aquatic_http_protocol = { version = "1.3.8", path = "./crates/http_protocol" }
-aquatic_http = { version = "1.3.8", path = "./crates/http" }
-aquatic_peer_id = { version = "1.3.8", path = "./crates/peer_id" }
-aquatic_toml_config = { version = "1.3.8", path = "./crates/toml_config" }
-aquatic_toml_config_derive = { version = "1.3.8", path = "./crates/toml_config_derive" }
-aquatic_udp_protocol = { version = "1.3.8", path = "./crates/udp_protocol" }
-aquatic_udp = { version = "1.3.8", path = "./crates/udp" }
-aquatic_udp_load_test = { version = "1.3.8", path = "./crates/udp_load_test" }
-aquatic_ws_protocol = { version = "1.3.8", path = "./crates/ws_protocol" }
-aquatic_ws = { version = "1.3.8", path = "./crates/ws" }
+aquatic_common = { version = "1.3.9", path = "./crates/common" }
+aquatic_http_protocol = { version = "1.3.9", path = "./crates/http_protocol" }
+aquatic_http = { version = "1.3.9", path = "./crates/http" }
+aquatic_peer_id = { version = "1.3.9", path = "./crates/peer_id" }
+aquatic_toml_config = { version = "1.3.9", path = "./crates/toml_config" }
+aquatic_toml_config_derive = { version = "1.3.9", path = "./crates/toml_config_derive" }
+aquatic_udp_protocol = { version = "1.3.9", path = "./crates/udp_protocol" }
+aquatic_udp = { version = "1.3.9", path = "./crates/udp" }
+aquatic_udp_load_test = { version = "1.3.9", path = "./crates/udp_load_test" }
+aquatic_ws_protocol = { version = "1.3.9", path = "./crates/ws_protocol" }
+aquatic_ws = { version = "1.3.9", path = "./crates/ws" }
 
 [profile.release]
 debug = false

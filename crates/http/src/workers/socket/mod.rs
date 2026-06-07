@@ -200,6 +200,8 @@ impl ListenerState {
         #[cfg(feature = "metrics")]
         active_connections_gauge.increment(1.0);
 
+        let auto_ban_tracker = self.state.auto_ban_tracker.clone();
+
         let f1 = async {
             run_connection(
                 self.config,
@@ -210,7 +212,7 @@ impl ListenerState {
                 valid_until.clone(),
                 stream,
                 self.worker_index,
-                self.state.auto_ban_tracker.clone(),
+                auto_ban_tracker,
             )
             .await
         };
