@@ -25,10 +25,13 @@ pub struct AutoBanConfig {
     pub window_secs: u64,
     /// Ban duration in seconds. Use 0 for permanent ban.
     pub ban_duration_secs: u64,
-    /// Path to write auto-banned IPs. When set, auto-banned IPs are appended
-    /// to this file (one IP per line), making bans persistent across restarts.
+    /// Path to write auto-banned IPs. When set, auto-banned IPs are batch-written
+    /// to this file periodically (one IP per line), making bans persistent across restarts.
     /// Set to empty string to disable file persistence.
     pub ban_list_path: PathBuf,
+    /// Interval in seconds for batch-writing banned IPs to file and reloading ip_ban_list.
+    /// Banned IPs are kept in memory until flushed. After flushing, ip_ban_list takes over.
+    pub flush_interval_secs: u64,
 }
 
 impl Default for AutoBanConfig {
@@ -39,6 +42,7 @@ impl Default for AutoBanConfig {
             window_secs: 60,
             ban_duration_secs: 3600,
             ban_list_path: PathBuf::from("./ip-ban-list.txt"),
+            flush_interval_secs: 60,
         }
     }
 }
@@ -73,9 +77,11 @@ impl AutoBanReason {
 struct IpRecord {
     count: u32,
     first_violation: Instant,
+    /// Some(instant) if currently banned, None if just counting
     banned_until: Option<Instant>,
-    /// Whether this IP has been written to the ban list file
-    written_to_file: bool,
+    /// Whether this banned IP has been flushed to file
+    /// Once flushed, ip_ban_list takes over and this record can be removed
+    flushed: bool,
 }
 
 /// Thread-safe auto-ban tracker
@@ -106,40 +112,20 @@ impl AutoBanTracker {
         }
     }
 
-    /// Append a banned IP to the ban list file
-    fn write_ip_to_file(&self, ip: &IpAddr, reason: AutoBanReason) {
-        if let Some(path) = &self.ban_list_path {
-            match OpenOptions::new().create(true).append(true).open(path) {
-                Ok(mut file) => {
-                    let line = format!("{}\n", ip);
-                    if let Err(err) = file.write_all(line.as_bytes()) {
-                        ::log::error!("Failed to write auto-banned IP {} to file: {}", ip, err);
-                    } else {
-                        ::log::info!(
-                            "Auto-banned IP {} written to {} (reason: {})",
-                            ip,
-                            path.display(),
-                            reason.as_str(),
-                        );
-                    }
-                }
-                Err(err) => {
-                    ::log::error!("Failed to open ban list file {}: {}", path.display(), err);
-                }
-            }
-        }
-    }
-
     /// Record a violation for an IP. Returns true if the IP should be auto-banned.
+    /// This is called on the hot path - NO file I/O here.
     pub fn record_violation(&self, ip: &IpAddr, reason: AutoBanReason) -> bool {
         let inner = self.inner.load();
         let now = Instant::now();
 
-        // Check if already banned
+        // Check if already banned and flushed (ip_ban_list handles it now)
         if let Some(record) = inner.records.get(ip) {
+            if record.flushed {
+                return false; // ip_ban_list takes over, don't count
+            }
             if let Some(banned_until) = record.banned_until {
                 if now < banned_until {
-                    return false; // Already banned, no need to re-ban
+                    return false; // Already banned in memory
                 }
             }
         }
@@ -149,7 +135,7 @@ impl AutoBanTracker {
         let ban_duration_secs = inner.ban_duration_secs;
         let max_records = inner.max_records;
 
-        // Clone, update, and swap back (simple copy-on-write)
+        // Clone, update, and swap back (copy-on-write)
         let mut new_inner = AutoBanInner {
             records: inner.records.clone(),
             threshold,
@@ -158,9 +144,12 @@ impl AutoBanTracker {
             max_records,
         };
 
-        // Cleanup expired entries if too many records
+        // Cleanup if too many records
         if new_inner.records.len() >= max_records {
             new_inner.records.retain(|_, record| {
+                if record.flushed {
+                    return false; // Already flushed, remove
+                }
                 if let Some(banned_until) = record.banned_until {
                     now < banned_until
                 } else {
@@ -181,7 +170,7 @@ impl AutoBanTracker {
                 if let Some(banned_until) = record.banned_until {
                     if now >= banned_until {
                         record.banned_until = None;
-                        record.written_to_file = false;
+                        record.flushed = false;
                     }
                 }
 
@@ -191,7 +180,6 @@ impl AutoBanTracker {
                     record.banned_until = if ban_duration_secs > 0 {
                         Some(now + std::time::Duration::from_secs(ban_duration_secs))
                     } else {
-                        // Permanent ban - set far future
                         Some(now + std::time::Duration::from_secs(365 * 24 * 3600))
                     };
                     true
@@ -215,7 +203,7 @@ impl AutoBanTracker {
                         } else {
                             None
                         },
-                        written_to_file: false,
+                        flushed: false,
                     },
                 );
                 should
@@ -223,14 +211,6 @@ impl AutoBanTracker {
         };
 
         if should_ban {
-            // Write to file before storing
-            self.write_ip_to_file(ip, reason);
-
-            // Mark as written in the record
-            if let Some(record) = new_inner.records.get_mut(ip) {
-                record.written_to_file = true;
-            }
-
             ::log::warn!(
                 "Auto-ban IP {} (reason: {}, count: {}/{})",
                 ip,
@@ -244,12 +224,17 @@ impl AutoBanTracker {
         should_ban
     }
 
-    /// Check if an IP is currently auto-banned
+    /// Check if an IP is currently auto-banned (in-memory check only)
     pub fn is_auto_banned(&self, ip: &IpAddr) -> bool {
         let inner = self.inner.load();
         let now = Instant::now();
 
         if let Some(record) = inner.records.get(ip) {
+            if record.flushed {
+                // ip_ban_list handles this IP now, but we return true
+                // so the connection handler rejects it immediately
+                return true;
+            }
             if let Some(banned_until) = record.banned_until {
                 return now < banned_until;
             }
@@ -258,12 +243,82 @@ impl AutoBanTracker {
         false
     }
 
-    /// Get the number of tracked IPs
+    /// Flush banned IPs to file and return the list of flushed IPs.
+    /// After calling this, the caller should reload ip_ban_list.
+    /// Flushed records are removed from memory since ip_ban_list takes over.
+    pub fn flush_to_file(&self) -> Vec<IpAddr> {
+        let inner = self.inner.load();
+        let now = Instant::now();
+
+        // Collect IPs that are banned but not yet flushed
+        let to_flush: Vec<IpAddr> = inner
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                !record.flushed
+                    && record.banned_until.map_or(false, |until| now < until)
+            })
+            .map(|(ip, _)| *ip)
+            .collect();
+
+        if to_flush.is_empty() {
+            return Vec::new();
+        }
+
+        // Batch write to file
+        if let Some(path) = &self.ban_list_path {
+            match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(mut file) => {
+                    let mut lines = String::with_capacity(to_flush.len() * 40);
+                    for ip in &to_flush {
+                        lines.push_str(&ip.to_string());
+                        lines.push('\n');
+                    }
+                    if let Err(err) = file.write_all(lines.as_bytes()) {
+                        ::log::error!("Failed to flush auto-banned IPs to file: {}", err);
+                        return Vec::new(); // Don't mark as flushed if write failed
+                    }
+                    ::log::info!(
+                        "Auto-ban flush: wrote {} IPs to {}",
+                        to_flush.len(),
+                        path.display(),
+                    );
+                }
+                Err(err) => {
+                    ::log::error!("Failed to open ban list file {}: {}", path.display(), err);
+                    return Vec::new(); // Don't mark as flushed if open failed
+                }
+            }
+        }
+
+        // Mark flushed records and remove them from memory
+        let mut new_inner = (*inner).clone();
+        let before = new_inner.records.len();
+
+        for ip in &to_flush {
+            if let Some(record) = new_inner.records.get_mut(ip) {
+                record.flushed = true;
+            }
+        }
+
+        // Remove flushed records - ip_ban_list will handle them after reload
+        new_inner.records.retain(|_, record| !record.flushed);
+
+        let removed = before - new_inner.records.len();
+        if removed > 0 {
+            ::log::info!("Auto-ban flush: freed {} memory records (ip_ban_list takes over)", removed);
+            self.inner.store(Arc::new(new_inner));
+        }
+
+        to_flush
+    }
+
+    /// Get the number of tracked IPs (not yet flushed)
     pub fn tracked_count(&self) -> usize {
         self.inner.load().records.len()
     }
 
-    /// Get the number of currently banned IPs
+    /// Get the number of currently banned IPs (in memory, not yet flushed)
     pub fn banned_count(&self) -> usize {
         let inner = self.inner.load();
         let now = Instant::now();
@@ -272,10 +327,8 @@ impl AutoBanTracker {
             .records
             .values()
             .filter(|record| {
-                record
-                    .banned_until
-                    .map(|until| now < until)
-                    .unwrap_or(false)
+                !record.flushed
+                    && record.banned_until.map_or(false, |until| now < until)
             })
             .count()
     }
@@ -290,6 +343,9 @@ impl AutoBanTracker {
         let before = new_inner.records.len();
 
         new_inner.records.retain(|_, record| {
+            if record.flushed {
+                return false;
+            }
             if let Some(banned_until) = record.banned_until {
                 now < banned_until
             } else {
@@ -330,17 +386,11 @@ mod tests {
 
         assert!(!tracker.is_auto_banned(&ip));
 
-        // First two violations should not trigger ban
         assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
         assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
-
-        // Third violation should trigger ban
         assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
 
-        // Should now be banned
         assert!(tracker.is_auto_banned(&ip));
-
-        // Further violations should not re-trigger
         assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
     }
 
@@ -363,9 +413,6 @@ mod tests {
         assert!(!tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
         assert!(!tracker.record_violation(&ip2, AutoBanReason::SqlInjection));
 
-        assert!(!tracker.is_auto_banned(&ip1));
-        assert!(!tracker.is_auto_banned(&ip2));
-
         assert!(tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
         assert!(tracker.is_auto_banned(&ip1));
         assert!(!tracker.is_auto_banned(&ip2));
@@ -381,18 +428,45 @@ mod tests {
     }
 
     #[test]
-    fn test_write_to_file() {
+    fn test_flush_to_file() {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
 
         let tracker = AutoBanTracker::new(2, 60, 3600, Some(path.clone()));
-        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let ip1 = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
 
-        assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
-        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        // Ban two IPs
+        assert!(!tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
+        assert!(tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
+        assert!(tracker.record_violation(&ip2, AutoBanReason::Crawler));
 
-        // Check file contains the IP
+        assert_eq!(tracker.banned_count(), 2);
+
+        // Flush to file
+        let flushed = tracker.flush_to_file();
+        assert_eq!(flushed.len(), 2);
+
+        // Memory should be freed
+        assert_eq!(tracker.banned_count(), 0);
+
+        // File should contain both IPs
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("1.2.3.4"));
+        assert!(contents.contains("5.6.7.8"));
+    }
+
+    #[test]
+    fn test_flush_removes_from_memory() {
+        let tracker = AutoBanTracker::new(1, 60, 3600, None);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert_eq!(tracker.tracked_count(), 1);
+
+        // Flush (no file path, so just marks as flushed and removes)
+        let flushed = tracker.flush_to_file();
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(tracker.tracked_count(), 0);
     }
 }

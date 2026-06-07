@@ -171,6 +171,7 @@ pub enum WorkerType {
     Statistics,
     Signals,
     Cleaning,
+    AutoBanFlush,
     #[cfg(feature = "prometheus")]
     Prometheus,
 }
@@ -183,6 +184,7 @@ impl Display for WorkerType {
             Self::Statistics => f.write_str("Statistics worker"),
             Self::Signals => f.write_str("Signals worker"),
             Self::Cleaning => f.write_str("Cleaning worker"),
+            Self::AutoBanFlush => f.write_str("Auto-ban flush worker"),
             #[cfg(feature = "prometheus")]
             Self::Prometheus => f.write_str("Prometheus worker"),
         }

@@ -189,6 +189,47 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
         join_handles.push((WorkerType::Prometheus, handle));
     }
 
+    // Spawn auto-ban flush thread
+    if config.auto_ban.enabled {
+        let flush_interval = Duration::from_secs(config.auto_ban.flush_interval_secs);
+        let auto_ban_tracker = state.auto_ban_tracker.clone();
+        let ip_ban_config = config.ip_ban.clone();
+        let ip_ban_list = state.ip_ban_list.clone();
+
+        let handle: JoinHandle<anyhow::Result<()>> = Builder::new()
+            .name("auto-ban-flush".into())
+            .spawn(move || {
+                loop {
+                    sleep(flush_interval);
+
+                    if let Some(tracker) = &auto_ban_tracker {
+                        let flushed = tracker.flush_to_file();
+
+                        if !flushed.is_empty() {
+                            // Reload ip_ban_list so it picks up the newly written IPs
+                            if let Err(err) = update_ip_ban_list(&ip_ban_config, &ip_ban_list) {
+                                ::log::error!("auto-ban flush: failed to reload ip_ban_list: {:#}", err);
+                            } else {
+                                ::log::info!(
+                                    "auto-ban flush: reloaded ip_ban_list after writing {} IPs",
+                                    flushed.len(),
+                                );
+                            }
+
+                            // Cleanup expired entries
+                            tracker.cleanup();
+                        }
+                    }
+                }
+
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+            .context("spawn auto-ban flush worker")?;
+
+        join_handles.push((WorkerType::AutoBanFlush, handle));
+    }
+
     // Spawn signal handler thread
     {
         let handle: JoinHandle<anyhow::Result<()>> = Builder::new()

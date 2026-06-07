@@ -176,6 +176,7 @@ threshold = 10              # 非法请求次数阈值
 window_secs = 60            # 统计时间窗口（秒）
 ban_duration_secs = 0       # 封禁时长（秒），0 = 永久封禁
 ban_list_path = "./ip-ban-list.txt"  # 封禁IP写入文件，重启后仍然生效
+flush_interval_secs = 60    # 批量写入文件间隔（秒），写入后自动热重载
 ```
 
 ### 性能优化配置
