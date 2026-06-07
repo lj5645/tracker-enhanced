@@ -79,6 +79,25 @@ impl ClientWhitelist {
         false
     }
 
+    /// Check if a peer_id is allowed using prefix matching.
+    /// BitTorrent peer_id format is `-XX####-...` where XX is the client prefix.
+    /// Using starts_with instead of contains to avoid false matches.
+    pub fn is_peer_id_allowed(&self, peer_id: &str) -> bool {
+        if self.allowed_patterns.is_empty() {
+            return true;
+        }
+
+        let peer_id_lower = peer_id.to_lowercase();
+
+        for pattern in &self.allowed_patterns {
+            if peer_id_lower.starts_with(pattern) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.allowed_patterns.len()

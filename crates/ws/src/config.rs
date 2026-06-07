@@ -1,7 +1,16 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use aquatic_common::{access_list::AccessListConfig, privileges::PrivilegeConfig};
+use aquatic_common::{
+    access_list::AccessListConfig,
+    privileges::PrivilegeConfig,
+    ip_ban::IpBanConfig,
+    client_ban::ClientBanConfig,
+    client_whitelist::ClientWhitelistConfig,
+    request_filter::RequestFilterConfig,
+    trusted_proxies::TrustedProxiesConfig,
+    auto_ban::AutoBanConfig,
+};
 use serde::Deserialize;
 
 use aquatic_common::cli::LogLevel;
@@ -44,6 +53,35 @@ pub struct Config {
     /// emitting of an error-level log message, while successful updates of the
     /// access list result in emitting of an info-level log message.
     pub access_list: AccessListConfig,
+    /// IP ban list configuration
+    ///
+    /// Block requests from specific IP addresses or CIDR ranges.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub ip_ban: IpBanConfig,
+    /// Client ban list configuration
+    ///
+    /// Block specific BitTorrent clients by peer_id pattern.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_ban: ClientBanConfig,
+    /// Client whitelist configuration
+    ///
+    /// Only allow specific BitTorrent clients by peer_id prefix.
+    /// When enabled, clients not in the whitelist will be blocked.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_whitelist: ClientWhitelistConfig,
+    /// Request filter configuration
+    ///
+    /// Filter malicious requests and private IP addresses.
+    pub request_filter: RequestFilterConfig,
+    /// Trusted proxies configuration
+    ///
+    /// When running behind a reverse proxy, only trust X-Forwarded-For
+    /// headers from these IP addresses. This prevents IP spoofing attacks.
+    pub trusted_proxies: TrustedProxiesConfig,
+    /// Auto-ban configuration
+    ///
+    /// Automatically ban IPs that exceed a threshold of illegal requests.
+    pub auto_ban: AutoBanConfig,
     #[cfg(feature = "metrics")]
     pub metrics: MetricsConfig,
 }
@@ -59,6 +97,12 @@ impl Default for Config {
             cleaning: CleaningConfig::default(),
             privileges: PrivilegeConfig::default(),
             access_list: AccessListConfig::default(),
+            ip_ban: IpBanConfig::default(),
+            client_ban: ClientBanConfig::default(),
+            client_whitelist: ClientWhitelistConfig::default(),
+            request_filter: RequestFilterConfig::default(),
+            trusted_proxies: TrustedProxiesConfig::default(),
+            auto_ban: AutoBanConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),
         }

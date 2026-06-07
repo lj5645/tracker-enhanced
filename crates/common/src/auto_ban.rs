@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 use std::time::Instant;
 
 use aquatic_toml_config::TomlConfig;
@@ -22,6 +22,11 @@ pub struct AutoBanConfig {
     /// Time window in seconds for counting violations
     pub window_secs: u64,
     /// Ban duration in seconds. Use 0 for permanent ban.
+    ///
+    /// Note: When ban_duration_secs > 0 (temporary ban), auto-banned IPs are
+    /// NOT written to the ban_list_path file because the file format doesn't
+    /// support expiration times. Temporary bans are only kept in memory and
+    /// will be lost on restart. Use 0 for permanent bans that persist across restarts.
     pub ban_duration_secs: u64,
     /// Path to write auto-banned IPs. When set, auto-banned IPs are batch-written
     /// to this file periodically (one IP per line), making bans persistent across restarts.
@@ -56,6 +61,7 @@ pub enum AutoBanReason {
     MissingUserAgent,
     ClientBanned,
     NotWhitelisted,
+    PrivateIp,
 }
 
 impl AutoBanReason {
@@ -68,6 +74,7 @@ impl AutoBanReason {
             Self::MissingUserAgent => "missing_user_agent",
             Self::ClientBanned => "client_banned",
             Self::NotWhitelisted => "not_whitelisted",
+            Self::PrivateIp => "private_ip",
         }
     }
 }
@@ -216,22 +223,34 @@ impl AutoBanTracker {
         false
     }
 
-    /// Flush banned IPs to file and return the list of flushed IPs.
+    /// Flush permanently banned IPs to file and return the list of flushed IPs.
+    /// Only IPs with ban_duration_secs == 0 (permanent bans) are written to file,
+    /// because the file format doesn't support expiration times.
+    /// Temporary bans are kept in memory only and cleaned up by cleanup().
     /// Records are NOT removed from memory yet - call remove_ips() after
     /// ip_ban_list has been successfully reloaded.
     pub fn flush_to_file(&self) -> Vec<IpAddr> {
         let inner = self.inner.read().unwrap();
         let now = Instant::now();
+        let is_permanent = inner.ban_duration_secs == 0;
 
         // Collect IPs that are banned
-        let to_flush: Vec<IpAddr> = inner
-            .records
-            .iter()
-            .filter(|(_, record)| {
-                record.banned_until.map_or(false, |until| now < until)
-            })
-            .map(|(ip, _)| *ip)
-            .collect();
+        // Only flush permanent bans to file (temporary bans can't be persisted
+        // because the file format doesn't support expiration times)
+        let to_flush: Vec<IpAddr> = if is_permanent {
+            inner
+                .records
+                .iter()
+                .filter(|(_, record)| {
+                    record.banned_until.map_or(false, |until| now < until)
+                })
+                .map(|(ip, _)| *ip)
+                .collect()
+        } else {
+            // For temporary bans, don't write to file - just return empty
+            // The IPs are still tracked in memory and will be cleaned up by cleanup()
+            return Vec::new();
+        };
 
         drop(inner); // Release read lock before I/O
 
@@ -263,6 +282,11 @@ impl AutoBanTracker {
                     return Vec::new(); // Don't report as flushed if open failed
                 }
             }
+        } else {
+            // No file path configured — don't report as flushed, otherwise
+            // the flush thread will call remove_ips() and the IPs will
+            // escape both auto_ban memory and ip_ban_list
+            return Vec::new();
         }
 
         to_flush
@@ -330,7 +354,6 @@ impl AutoBanTracker {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_auto_ban_threshold() {
@@ -381,11 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_to_file() {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
+    fn test_flush_to_file_permanent_ban() {
+        // Use ban_duration_secs=0 for permanent bans (written to file)
+        let tmp = std::env::temp_dir().join("test_auto_ban_flush.txt");
+        let _ = std::fs::remove_file(&tmp); // Clean up from previous runs
+        let path = tmp.clone();
 
-        let tracker = AutoBanTracker::new(2, 60, 3600, Some(path.clone()));
+        let tracker = AutoBanTracker::new(2, 60, 0, Some(path.clone()));
         let ip1 = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         let ip2 = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
 
@@ -411,24 +436,42 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("1.2.3.4"));
         assert!(contents.contains("5.6.7.8"));
+
+        let _ = std::fs::remove_file(&tmp); // Clean up
     }
 
     #[test]
-    fn test_flush_removes_from_memory() {
+    fn test_flush_temporary_ban_no_file() {
+        // Use ban_duration_secs=3600 for temporary bans (NOT written to file)
         let tracker = AutoBanTracker::new(1, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
         assert_eq!(tracker.tracked_count(), 1);
 
-        // Flush (no file path, just returns the list)
+        // Flush returns empty for temporary bans
         let flushed = tracker.flush_to_file();
-        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed.len(), 0);
+
         // Still in memory
         assert_eq!(tracker.tracked_count(), 1);
+        assert!(tracker.is_auto_banned(&ip));
+    }
 
-        // Remove from memory
-        tracker.remove_ips(&flushed);
-        assert_eq!(tracker.tracked_count(), 0);
+    #[test]
+    fn test_flush_no_file_path() {
+        // Permanent ban but no file path configured — should return empty
+        let tracker = AutoBanTracker::new(1, 60, 0, None);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert_eq!(tracker.banned_count(), 1);
+
+        // No file path — flush returns empty to prevent IP escape
+        let flushed = tracker.flush_to_file();
+        assert_eq!(flushed.len(), 0);
+
+        // Still in memory and still banned
+        assert!(tracker.is_auto_banned(&ip));
     }
 }

@@ -12,6 +12,11 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use aquatic_common::access_list::AccessListCache;
+use aquatic_common::ip_ban::{IpBanListCache, create_ip_ban_list_cache};
+use aquatic_common::client_ban::{ClientBanListCache, create_client_ban_list_cache};
+use aquatic_common::client_whitelist::{ClientWhitelistCache, create_client_whitelist_cache};
+use aquatic_common::request_filter::RequestFilter;
+use aquatic_common::auto_ban::{AutoBanReason};
 use crossbeam_channel::Sender;
 use io_uring::opcode::Timeout;
 use io_uring::types::{Fixed, Timespec};
@@ -84,6 +89,10 @@ pub struct SocketWorker {
     statistics: CachePaddedArc<IpVersionStatistics<SocketWorkerStatistics>>,
     statistics_sender: Sender<StatisticsMessage>,
     access_list_cache: AccessListCache,
+    ip_ban_list_cache: IpBanListCache,
+    client_ban_list_cache: ClientBanListCache,
+    client_whitelist_cache: ClientWhitelistCache,
+    request_filter: RequestFilter,
     validator: ConnectionValidator,
     #[allow(dead_code)]
     opt_socket_ipv4: Option<UdpSocket>,
@@ -137,6 +146,10 @@ impl SocketWorker {
         };
 
         let access_list_cache = create_access_list_cache(&shared_state.access_list);
+        let ip_ban_list_cache = create_ip_ban_list_cache(&shared_state.ip_ban_list);
+        let client_ban_list_cache = create_client_ban_list_cache(&shared_state.client_ban_list);
+        let client_whitelist_cache = create_client_whitelist_cache(&shared_state.client_whitelist);
+        let request_filter = RequestFilter::new();
 
         let send_buffers = SendBuffers::new(send_buffer_entries as usize);
         let recv_helper_v4 = RecvHelperV4::new(&config);
@@ -203,8 +216,12 @@ impl SocketWorker {
             shared_state,
             statistics,
             statistics_sender,
-            validator,
             access_list_cache,
+            ip_ban_list_cache,
+            client_ban_list_cache,
+            client_whitelist_cache,
+            request_filter,
+            validator,
             opt_socket_ipv4,
             opt_socket_ipv6,
             send_buffers,
@@ -479,6 +496,64 @@ impl SocketWorker {
         None
     }
 
+    /// Returns true if the request should be blocked
+    fn run_security_checks(&self, src: &CanonicalSocketAddr, peer_id_opt: Option<&PeerId>) -> bool {
+        let peer_ip = src.get().ip();
+
+        // 1. IP ban check
+        if self.config.ip_ban.mode.is_on() {
+            if self.ip_ban_list_cache.load().is_banned(&peer_ip) {
+                ::log::debug!("IP banned: {}", peer_ip);
+                return true;
+            }
+        }
+
+        // 2. Auto-ban check
+        if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+            if tracker.is_auto_banned(&peer_ip) {
+                ::log::debug!("Auto-banned IP: {}", peer_ip);
+                return true;
+            }
+        }
+
+        // 3. Private IP filter
+        if self.config.request_filter.filter_private_ips && !self.request_filter.is_ip_allowed(&peer_ip) {
+            ::log::debug!("Private IP filtered: {}", peer_ip);
+            if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                tracker.record_violation(&peer_ip, AutoBanReason::PrivateIp);
+            }
+            return true;
+        }
+
+        // 4. Client ban check (for announce requests with peer_id)
+        if let Some(peer_id) = peer_id_opt {
+            let peer_id_str = String::from_utf8_lossy(&peer_id.0);
+
+            if self.config.client_ban.mode.is_on() {
+                if self.client_ban_list_cache.load().is_banned(&peer_id_str) {
+                    ::log::debug!("Client banned: {}", peer_id_str);
+                    if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
+                    }
+                    return true;
+                }
+            }
+
+            // 5. Client whitelist check
+            if self.config.client_whitelist.mode.is_on() {
+                if !self.client_whitelist_cache.load().is_peer_id_allowed(&peer_id_str) {
+                    ::log::debug!("Client not whitelisted: {}", peer_id_str);
+                    if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     fn handle_request(
         &mut self,
         request: Request,
@@ -488,6 +563,11 @@ impl SocketWorker {
 
         match request {
             Request::Connect(request) => {
+                // Run security checks (no peer_id for connect)
+                if self.run_security_checks(&src, None) {
+                    return None;
+                }
+
                 let response = Response::Connect(ConnectResponse {
                     connection_id: self.validator.create_connection_id(src),
                     transaction_id: request.transaction_id,
@@ -496,6 +576,11 @@ impl SocketWorker {
                 return Some((src, response));
             }
             Request::Announce(request) => {
+                // Run security checks with peer_id
+                if self.run_security_checks(&src, Some(&request.peer_id)) {
+                    return None;
+                }
+
                 if self
                     .validator
                     .connection_id_valid(src, request.connection_id)
@@ -526,6 +611,11 @@ impl SocketWorker {
                 }
             }
             Request::Scrape(request) => {
+                // Run security checks (no peer_id for scrape)
+                if self.run_security_checks(&src, None) {
+                    return None;
+                }
+
                 if self
                     .validator
                     .connection_id_valid(src, request.connection_id)

@@ -80,7 +80,7 @@ impl TrustedProxies {
 
     pub fn is_trusted(&self, addr: IpAddr) -> bool {
         if self.table.is_empty() {
-            return true;
+            return false;
         }
         self.table.longest_match(addr).is_some()
     }
@@ -142,6 +142,15 @@ mod tests {
         assert!(proxies.is_trusted("192.168.1.100".parse().unwrap()));
         assert!(proxies.is_trusted("10.0.0.1".parse().unwrap()));
         assert!(!proxies.is_trusted("10.0.0.2".parse().unwrap()));
+        assert!(!proxies.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_empty_trusted_proxies() {
+        let proxies = TrustedProxies::default();
+
+        // Empty table should NOT trust any IP (security: no proxies = no trust)
+        assert!(!proxies.is_trusted("192.168.1.1".parse().unwrap()));
         assert!(!proxies.is_trusted("8.8.8.8".parse().unwrap()));
     }
 }

@@ -1,12 +1,19 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use aquatic_common::access_list::{create_access_list_cache, AccessListArcSwap, AccessListCache};
+use aquatic_common::ip_ban::{IpBanListArcSwap, IpBanListCache, create_ip_ban_list_cache};
+use aquatic_common::client_ban::{ClientBanListArcSwap, ClientBanListCache, create_client_ban_list_cache};
+use aquatic_common::client_whitelist::{ClientWhitelistArcSwap, ClientWhitelistCache, create_client_whitelist_cache};
+use aquatic_common::request_filter::RequestFilter;
+use aquatic_common::auto_ban::{AutoBanTracker, AutoBanReason};
+use aquatic_common::trusted_proxies::TrustedProxiesArcSwap;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::ServerStartInstant;
 use aquatic_ws_protocol::common::{InfoHash, PeerId, ScrapeAction};
@@ -30,6 +37,7 @@ use glommio::{enclose, prelude::*};
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 use slab::Slab;
+use tungstenite::handshake::server::{Request, Response};
 
 #[cfg(feature = "metrics")]
 use metrics::{Counter, Gauge};
@@ -48,6 +56,11 @@ type PeerClientGauge = (Gauge, Option<Gauge>);
 pub struct ConnectionRunner {
     pub config: Rc<Config>,
     pub access_list: Arc<AccessListArcSwap>,
+    pub ip_ban_list: Arc<IpBanListArcSwap>,
+    pub client_ban_list: Arc<ClientBanListArcSwap>,
+    pub client_whitelist: Arc<ClientWhitelistArcSwap>,
+    pub trusted_proxies: Arc<TrustedProxiesArcSwap>,
+    pub auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     pub in_message_senders: Rc<Senders<(InMessageMeta, InMessage)>>,
     pub connection_valid_until: Rc<RefCell<ValidUntil>>,
     pub out_message_sender: Rc<LocalSender<(OutMessageMeta, OutMessage)>>,
@@ -57,6 +70,7 @@ pub struct ConnectionRunner {
     pub connection_id: ConnectionId,
     pub opt_tls_config: Option<Arc<ArcSwap<RustlsConfig>>>,
     pub ip_version: IpVersion,
+    pub peer_ip: IpAddr,
 }
 
 impl ConnectionRunner {
@@ -166,11 +180,87 @@ impl ConnectionRunner {
             max_write_buffer_size: self.config.network.websocket_write_buffer_size * 3,
             ..Default::default()
         };
-        let stream = async_tungstenite::accept_async_with_config(stream, Some(ws_config)).await?;
+
+        // Capture handshake headers using Rc<RefCell<>> for shared mutable access
+        let handshake_user_agent: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let handshake_xff: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+        let callback_ua = handshake_user_agent.clone();
+        let callback_xff = handshake_xff.clone();
+
+        let callback = move |req: &Request, response: Response| {
+            // Extract User-Agent header
+            if let Some(ua) = req.headers().get("user-agent") {
+                if let Ok(ua_str) = ua.to_str() {
+                    *callback_ua.borrow_mut() = Some(ua_str.to_string());
+                }
+            }
+            // Extract X-Forwarded-For header
+            if let Some(xff) = req.headers().get("x-forwarded-for") {
+                if let Ok(xff_str) = xff.to_str() {
+                    *callback_xff.borrow_mut() = Some(xff_str.to_string());
+                }
+            }
+            Ok(response)
+        };
+
+        let stream = async_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_config)).await?;
         let (ws_out, ws_in) = futures::StreamExt::split(stream);
+
+        // Resolve real peer IP using trusted proxies
+        let mut peer_ip = self.peer_ip;
+        if self.config.trusted_proxies.enabled {
+            let trusted_proxies = self.trusted_proxies.load();
+            if trusted_proxies.is_trusted(self.peer_ip) {
+                if let Some(xff) = handshake_xff.borrow().as_ref() {
+                    // X-Forwarded-For: client, proxy1, proxy2 — take the first (leftmost) IP
+                    if let Some(client_ip_str) = xff.split(',').next() {
+                        let client_ip_str = client_ip_str.trim();
+                        if let Ok(client_ip) = client_ip_str.parse::<IpAddr>() {
+                            peer_ip = client_ip;
+                        } else {
+                            ::log::warn!(
+                                "Invalid X-Forwarded-For IP from trusted proxy {}: {}",
+                                self.peer_ip,
+                                client_ip_str
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Crawler detection on handshake User-Agent
+        let request_filter = RequestFilter::new();
+        let handshake_user_agent_value = handshake_user_agent.borrow().clone();
+
+        // Check for missing User-Agent
+        if self.config.request_filter.filter_missing_user_agent && handshake_user_agent_value.is_none() {
+            ::log::debug!("Missing User-Agent in WebSocket handshake");
+            if let Some(tracker) = &self.auto_ban_tracker {
+                tracker.record_violation(&peer_ip, AutoBanReason::MissingUserAgent);
+            }
+            return Err(anyhow::anyhow!("missing user-agent"));
+        }
+
+        // Check for crawler User-Agent
+        if self.config.request_filter.filter_crawlers {
+            if let Some(ref ua) = handshake_user_agent_value {
+                if request_filter.is_crawler(Some(ua.as_str())) {
+                    ::log::debug!("Crawler detected in WebSocket handshake: {}", ua);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::Crawler);
+                    }
+                    return Err(anyhow::anyhow!("crawler detected: {}", ua));
+                }
+            }
+        }
 
         let pending_scrape_slab = Rc::new(RefCell::new(Slab::new()));
         let access_list_cache = create_access_list_cache(&self.access_list);
+        let ip_ban_list_cache = create_ip_ban_list_cache(&self.ip_ban_list);
+        let client_ban_list_cache = create_client_ban_list_cache(&self.client_ban_list);
+        let client_whitelist_cache = create_client_whitelist_cache(&self.client_whitelist);
 
         let config = self.config.clone();
 
@@ -178,6 +268,11 @@ impl ConnectionRunner {
             let mut reader = ConnectionReader {
                 config: self.config.clone(),
                 access_list_cache,
+                ip_ban_list_cache,
+                client_ban_list_cache,
+                client_whitelist_cache,
+                request_filter,
+                auto_ban_tracker: self.auto_ban_tracker,
                 in_message_senders: self.in_message_senders,
                 out_message_sender: self.out_message_sender,
                 pending_scrape_slab,
@@ -185,6 +280,8 @@ impl ConnectionRunner {
                 ws_in,
                 ip_version: self.ip_version,
                 connection_id: self.connection_id,
+                peer_ip,
+                handshake_user_agent: handshake_user_agent_value,
                 clean_up_data: clean_up_data.clone(),
                 #[cfg(feature = "metrics")]
                 total_announce_requests_counter: ::metrics::counter!(
@@ -227,6 +324,11 @@ impl ConnectionRunner {
 struct ConnectionReader<S> {
     config: Rc<Config>,
     access_list_cache: AccessListCache,
+    ip_ban_list_cache: IpBanListCache,
+    client_ban_list_cache: ClientBanListCache,
+    client_whitelist_cache: ClientWhitelistCache,
+    request_filter: RequestFilter,
+    auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     in_message_senders: Rc<Senders<(InMessageMeta, InMessage)>>,
     out_message_sender: Rc<LocalSender<(OutMessageMeta, OutMessage)>>,
     pending_scrape_slab: Rc<RefCell<Slab<PendingScrapeResponse>>>,
@@ -234,6 +336,8 @@ struct ConnectionReader<S> {
     ws_in: SplitStream<WebSocketStream<S>>,
     ip_version: IpVersion,
     connection_id: ConnectionId,
+    peer_ip: IpAddr,
+    handshake_user_agent: Option<String>,
     clean_up_data: ConnectionCleanupData,
     #[cfg(feature = "metrics")]
     total_announce_requests_counter: Counter,
@@ -242,6 +346,82 @@ struct ConnectionReader<S> {
 }
 
 impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
+    /// Returns true if the request should be blocked
+    fn run_security_checks(&self, peer_id_opt: Option<&PeerId>) -> bool {
+        // 1. IP ban check
+        if self.config.ip_ban.mode.is_on() {
+            if self.ip_ban_list_cache.load().is_banned(&self.peer_ip) {
+                ::log::debug!("IP banned: {}", self.peer_ip);
+                return true;
+            }
+        }
+
+        // 2. Auto-ban check
+        if let Some(tracker) = &self.auto_ban_tracker {
+            if tracker.is_auto_banned(&self.peer_ip) {
+                ::log::debug!("Auto-banned IP: {}", self.peer_ip);
+                return true;
+            }
+        }
+
+        // 3. Private IP filter
+        if self.config.request_filter.filter_private_ips && !self.request_filter.is_ip_allowed(&self.peer_ip) {
+            ::log::debug!("Private IP filtered: {}", self.peer_ip);
+            if let Some(tracker) = &self.auto_ban_tracker {
+                tracker.record_violation(&self.peer_ip, AutoBanReason::PrivateIp);
+            }
+            return true;
+        }
+
+        // 4. Client ban check (for announce requests with peer_id)
+        if let Some(peer_id) = peer_id_opt {
+            let peer_id_str = String::from_utf8_lossy(&peer_id.0);
+
+            if self.config.client_ban.mode.is_on() {
+                if self.client_ban_list_cache.load().is_banned(&peer_id_str) {
+                    ::log::debug!("Client banned: {}", peer_id_str);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&self.peer_ip, AutoBanReason::ClientBanned);
+                    }
+                    return true;
+                }
+            }
+
+            // 5. Client whitelist check (by peer_id)
+            if self.config.client_whitelist.mode.is_on() {
+                if !self.client_whitelist_cache.load().is_peer_id_allowed(&peer_id_str) {
+                    ::log::debug!("Client not whitelisted: {}", peer_id_str);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        // 6. Client whitelist check (by User-Agent from handshake)
+        if self.config.client_whitelist.mode.is_on() {
+            if let Some(ref ua) = self.handshake_user_agent {
+                if !self.client_whitelist_cache.load().is_allowed(ua) {
+                    ::log::debug!("User-Agent not whitelisted: {}", ua);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
+                    }
+                    return true;
+                }
+            } else {
+                // Whitelist is enabled but no User-Agent — cannot verify, block
+                ::log::debug!("No User-Agent while whitelist is enabled");
+                if let Some(tracker) = &self.auto_ban_tracker {
+                    tracker.record_violation(&self.peer_ip, AutoBanReason::MissingUserAgent);
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
     async fn run_in_message_loop(&mut self) -> anyhow::Result<()> {
         loop {
             let message = self
@@ -293,6 +473,17 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
     async fn handle_announce_request(&mut self, request: AnnounceRequest) -> anyhow::Result<()> {
         #[cfg(feature = "metrics")]
         self.total_announce_requests_counter.increment(1);
+
+        // Run security checks with peer_id
+        if self.run_security_checks(Some(&request.peer_id)) {
+            self.send_error_response(
+                "Access denied".into(),
+                Some(ErrorResponseAction::Announce),
+                Some(request.info_hash),
+            )
+            .await?;
+            return Ok(());
+        }
 
         let info_hash = request.info_hash;
 
@@ -392,6 +583,17 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
     async fn handle_scrape_request(&mut self, request: ScrapeRequest) -> anyhow::Result<()> {
         #[cfg(feature = "metrics")]
         self.total_scrape_requests_counter.increment(1);
+
+        // Run security checks (no peer_id for scrape)
+        if self.run_security_checks(None) {
+            self.send_error_response(
+                "Access denied".into(),
+                Some(ErrorResponseAction::Scrape),
+                None,
+            )
+            .await?;
+            return Ok(());
+        }
 
         let info_hashes = if let Some(info_hashes) = request.info_hashes {
             info_hashes

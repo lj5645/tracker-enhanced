@@ -1,6 +1,58 @@
 # 更新日志
 
-## v1.3.2
+## v1.3.6
+
+### 修复
+
+- **修复 WS 白名单对缺失 User-Agent 的逻辑漏洞**：客户端白名单启用时，缺失 User-Agent 的 WebSocket 连接能绕过白名单检查（`if let Some` 跳过 None 情况）。现改为白名单启用但无 UA 时直接拦截
+- **修复 ip_ban.mode=Off 时文件无限增长**：当 `ip_ban.mode = Off` 但 `auto_ban.enabled = true` 时，flush 线程仍写文件但从不调用 `remove_ips()`，导致每个 flush 周期重复追加相同的 IP，文件无限增长。现改为 `ip_ban.mode` 为 Off 时完全跳过文件写入，IP 保留在 auto_ban 内存中
+- **修复 auto_ban.rs 测试代码**：测试使用 `ban_duration_secs=3600`（临时封禁）但期望 `flush_to_file()` 返回非空结果，与实际逻辑矛盾。同时移除了 `tempfile` 外部依赖，改用 `std::env::temp_dir()`
+- **清理未使用的导入**：移除 `auto_ban.rs` 中未使用的 `Arc`，`mio/mod.rs` 和 `uring/mod.rs` 中未使用的 `IpAddr`
+
+## v1.3.5
+
+### 修复
+
+- **修复 ip_ban.mode=Off 时 IP 逃逸**：当 `ip_ban.mode = Off` 但 `auto_ban.enabled = true` 时，`update_ip_ban_list()` 返回 Ok 但不加载文件，flush 线程仍调用 `remove_ips()` 导致 IP 被解封。现改为只有 `ip_ban.mode.is_on()` 时才从内存移除，否则保留在 auto_ban 内存中（影响 HTTP/UDP/WS 三个 tracker）
+- **修复 ClientWhitelist 对 peer_id 匹配错误**：`is_allowed()` 使用 `contains()` 子串匹配，对 User-Agent 正确但对 peer_id（如 `-UT1234-abc`）会误匹配。新增 `is_peer_id_allowed()` 方法使用 `starts_with()` 前缀匹配，UDP/WS tracker 的 peer_id 白名单检查已改用此方法
+
+## v1.3.4
+
+### 新增
+
+- **UDP 安全功能集成**：将 IP 封禁、客户端封禁、客户端白名单、自动封禁、私有 IP 过滤集成到 UDP tracker
+  - IP 封禁：检查源 IP 是否在封禁列表中
+  - 客户端封禁：检查 announce 请求中的 peer_id 是否被封禁
+  - 客户端白名单：检查 peer_id 是否在白名单中
+  - 自动封禁：违规超过阈值自动封禁 IP，定期刷入 ip_ban_list 文件
+  - 私有 IP 过滤：过滤私有 IP 地址的请求
+  - SIGUSR2 信号热重载：发送 SIGUSR2 信号重新加载 ip_ban_list、client_ban_list、client_whitelist
+  - 注意：UDP 是二进制协议，不支持 SQL 注入/路径遍历检测、爬虫检测、可信代理
+
+- **WS 安全功能集成**：将全部 7 项安全功能集成到 WebSocket (WebTorrent) tracker
+  - IP 封禁、客户端封禁、客户端白名单、自动封禁、私有 IP 过滤
+  - 可信代理：通过 `accept_hdr_async_with_config` 提取 X-Forwarded-For 头，解析真实客户端 IP
+  - 爬虫检测：从 WebSocket 握手阶段的 User-Agent 头检测爬虫，检测到则拒绝连接
+  - 客户端白名单同时检查 peer_id 和 User-Agent
+  - SIGUSR2 信号热重载
+
+### 修复
+
+- **修复 io_uring 后端安全功能缺失**：UDP tracker 的 io_uring 后端完全没有安全检查（IP 封禁、客户端封禁、白名单、自动封禁、私有 IP 过滤），所有安全功能可被绕过。现已补全
+- **修复 auto-ban IP 静默解封**：`ban_list_path` 为空时 `flush_to_file()` 仍返回被封禁 IP 列表，导致 flush 线程调用 `remove_ips()` 后 IP 既不在 auto_ban 内存中也不在 ip_ban_list 中，被静默解封。现改为无文件路径时返回空列表
+- **修复 WS `is_crawler` 类型不匹配**：传入 `&String` 给 `Option<&str>` 参数导致编译失败，已修正为 `Some(ua.as_str())`
+- **修复 WS 缺少 auto-ban flush 线程**：自动封禁的 IP 永远不会被写入文件、不会被清理，现已添加
+- **修复 WS 爬虫检测未检查配置开关**：即使 `filter_crawlers = false` 也会拦截爬虫，现已加上配置检查
+- **修复 WS 缺少 `filter_missing_user_agent` 检查**：缺少 User-Agent 的 WebSocket 连接不会被拦截，现已实现
+- **修复 UDP flush 线程返回类型不一致**：与 HTTP 实现不一致，缺少注释，已统一
+- **修复 auto-ban 内存泄漏**：`cleanup()` 之前仅在有新封禁 IP 时执行，导致未达阈值的过期条目永远不会被清理，内存持续增长。现改为每次 flush 周期都执行 cleanup
+- **修复 TrustedProxies 安全漏洞**：空信任代理列表时 `is_trusted()` 返回 `true`，导致启用 `trusted_proxies.enabled` 但列表为空时所有请求都被信任，攻击者可伪造 IP。现改为空列表返回 `false`
+- **修复私有 IP 过滤不记录违规**：私有 IP 被过滤后未调用 `record_violation()`，与其他安全过滤器不一致，现已补上
+- **修复反向代理缺头崩溃**：配置了反向代理但请求缺少 X-Forwarded-For 头时 `panic!` 导致整个 socket worker 崩溃（DoS 漏洞），现改为返回错误并记录警告日志
+- **优化已封禁 IP 性能**：已在 ip_ban_list 中的 IP 不再调用 `record_violation()`，避免每次请求都获取写锁
+- **修复非永久封禁持久化问题**：`ban_duration_secs > 0`（临时封禁）时不再写入文件，因为文件格式不支持过期时间，之前会导致临时封禁变成永久封禁
+
+## v1.3.3
 
 ### 修复
 

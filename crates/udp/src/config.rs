@@ -5,7 +5,15 @@ use std::{
 #[cfg(feature = "prometheus")]
 use std::net::SocketAddr;
 
-use aquatic_common::{access_list::AccessListConfig, privileges::PrivilegeConfig};
+use aquatic_common::{
+    access_list::AccessListConfig,
+    privileges::PrivilegeConfig,
+    ip_ban::IpBanConfig,
+    client_ban::ClientBanConfig,
+    client_whitelist::ClientWhitelistConfig,
+    request_filter::RequestFilterConfig,
+    auto_ban::AutoBanConfig,
+};
 use cfg_if::cfg_if;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +41,32 @@ pub struct Config {
     /// emitting of an error-level log message, while successful updates of the
     /// access list result in emitting of an info-level log message.
     pub access_list: AccessListConfig,
+    /// IP ban list configuration
+    ///
+    /// Block requests from specific IP addresses or CIDR ranges.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub ip_ban: IpBanConfig,
+    /// Client ban list configuration
+    ///
+    /// Block specific BitTorrent clients by peer_id pattern.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_ban: ClientBanConfig,
+    /// Client whitelist configuration
+    ///
+    /// Only allow specific BitTorrent clients by peer_id prefix.
+    /// When enabled, clients not in the whitelist will be blocked.
+    /// The file is read on start and when the program receives `SIGUSR2`.
+    pub client_whitelist: ClientWhitelistConfig,
+    /// Request filter configuration
+    ///
+    /// Filter private IP addresses from being used as peer addresses.
+    pub request_filter: RequestFilterConfig,
+    /// Auto-ban configuration
+    ///
+    /// Automatically ban IPs that exceed a threshold of illegal requests
+    /// within a time window. Illegal requests include: IP already banned,
+    /// banned client, not whitelisted client, or private IP.
+    pub auto_ban: AutoBanConfig,
 }
 
 impl Default for Config {
@@ -46,6 +80,11 @@ impl Default for Config {
             cleaning: CleaningConfig::default(),
             privileges: PrivilegeConfig::default(),
             access_list: AccessListConfig::default(),
+            ip_ban: IpBanConfig::default(),
+            client_ban: ClientBanConfig::default(),
+            client_whitelist: ClientWhitelistConfig::default(),
+            request_filter: RequestFilterConfig::default(),
+            auto_ban: AutoBanConfig::default(),
         }
     }
 }

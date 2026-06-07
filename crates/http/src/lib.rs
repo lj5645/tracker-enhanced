@@ -204,25 +204,29 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
                     sleep(flush_interval);
 
                     if let Some(tracker) = &auto_ban_tracker {
-                        let flushed = tracker.flush_to_file();
+                        // Only flush to file if ip_ban mode is On, otherwise
+                        // the file will grow indefinitely with duplicate entries
+                        // since remove_ips() won't be called
+                        if ip_ban_config.mode.is_on() {
+                            let flushed = tracker.flush_to_file();
 
-                        if !flushed.is_empty() {
-                            // Reload ip_ban_list FIRST so it picks up the newly written IPs
-                            if let Err(err) = update_ip_ban_list(&ip_ban_config, &ip_ban_list) {
-                                ::log::error!("auto-ban flush: failed to reload ip_ban_list: {:#}", err);
-                                // Don't remove from memory if reload failed - keep dual protection
-                            } else {
-                                ::log::info!(
-                                    "auto-ban flush: reloaded ip_ban_list after writing {} IPs",
-                                    flushed.len(),
-                                );
-                                // Now safe to remove from memory since ip_ban_list has taken over
-                                tracker.remove_ips(&flushed);
+                            if !flushed.is_empty() {
+                                // Reload ip_ban_list FIRST so it picks up the newly written IPs
+                                if let Err(err) = update_ip_ban_list(&ip_ban_config, &ip_ban_list) {
+                                    ::log::error!("auto-ban flush: failed to reload ip_ban_list: {:#}", err);
+                                    // Don't remove from memory if reload failed - keep dual protection
+                                } else {
+                                    ::log::info!(
+                                        "auto-ban flush: reloaded ip_ban_list after writing {} IPs",
+                                        flushed.len(),
+                                    );
+                                    tracker.remove_ips(&flushed);
+                                }
                             }
-
-                            // Cleanup expired entries
-                            tracker.cleanup();
                         }
+
+                        // Always cleanup expired entries, even if nothing was flushed
+                        tracker.cleanup();
                     }
                 }
 

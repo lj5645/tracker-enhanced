@@ -1,6 +1,11 @@
 use std::{net::IpAddr, sync::Arc};
 
 use aquatic_common::access_list::AccessListArcSwap;
+use aquatic_common::ip_ban::IpBanListArcSwap;
+use aquatic_common::client_ban::ClientBanListArcSwap;
+use aquatic_common::client_whitelist::ClientWhitelistArcSwap;
+use aquatic_common::trusted_proxies::TrustedProxiesArcSwap;
+use aquatic_common::auto_ban::AutoBanTracker;
 
 pub use aquatic_common::ValidUntil;
 use aquatic_ws_protocol::common::{InfoHash, PeerId};
@@ -26,6 +31,11 @@ impl IpVersion {
 #[derive(Default, Clone)]
 pub struct State {
     pub access_list: Arc<AccessListArcSwap>,
+    pub ip_ban_list: Arc<IpBanListArcSwap>,
+    pub client_ban_list: Arc<ClientBanListArcSwap>,
+    pub client_whitelist: Arc<ClientWhitelistArcSwap>,
+    pub trusted_proxies: Arc<TrustedProxiesArcSwap>,
+    pub auto_ban_tracker: Option<Arc<AutoBanTracker>>,
 }
 
 #[derive(Copy, Clone, Debug)]

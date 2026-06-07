@@ -285,9 +285,8 @@ where
         if self.config.ip_ban.mode.is_on() {
             if self.ip_ban_list_cache.load().is_banned(&peer_ip) {
                 ::log::debug!("IP banned: {}", peer_ip);
-                if let Some(tracker) = &self.auto_ban_tracker {
-                    tracker.record_violation(&peer_ip, AutoBanReason::IpBanned);
-                }
+                // Don't record violation for already-banned IPs - they're already blocked
+                // and acquiring a write lock on every request is unnecessary overhead
                 return Ok(Some(Response::Failure(FailureResponse {
                     failure_reason: "IP banned".into(),
                 })));
@@ -327,6 +326,9 @@ where
             // Check private IP filter
             if filter_config.filter_private_ips && !self.request_filter.is_ip_allowed(&peer_ip) {
                 ::log::debug!("Private IP filtered: {}", peer_ip);
+                if let Some(tracker) = &self.auto_ban_tracker {
+                    tracker.record_violation(&peer_ip, AutoBanReason::PrivateIp);
+                }
                 return Ok(Some(Response::Failure(FailureResponse {
                     failure_reason: "Private IP not allowed".into(),
                 })));
@@ -412,7 +414,13 @@ where
                 }
                 Err(RequestParseError::MoreDataNeeded) => continue,
                 Err(RequestParseError::RequiredPeerIpHeaderMissing(err)) => {
-                    panic!("Tracker configured as running behind reverse proxy, but no corresponding IP header set in request. Please check your reverse proxy setup as well as your aquatic configuration. Error: {:#}", err);
+                    ::log::warn!(
+                        "Tracker configured as running behind reverse proxy, but no corresponding IP header set in request. Please check your reverse proxy setup as well as your aquatic configuration. Error: {:#}",
+                        err
+                    );
+                    return Err(ConnectionError::Other(anyhow::anyhow!(
+                        "required peer ip header missing or invalid"
+                    )));
                 }
                 Err(RequestParseError::Other(err)) => {
                     ::log::debug!("Failed parsing request: {:#}", err);

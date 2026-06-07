@@ -65,6 +65,11 @@ pub async fn run_socket_worker(
 
     let config = Rc::new(config);
     let access_list = state.access_list;
+    let ip_ban_list = state.ip_ban_list;
+    let client_ban_list = state.client_ban_list;
+    let client_whitelist = state.client_whitelist;
+    let trusted_proxies = state.trusted_proxies;
+    let auto_ban_tracker = state.auto_ban_tracker;
 
     let listener = create_tcp_listener(&config, priv_dropper).context("create tcp listener")?;
 
@@ -137,8 +142,8 @@ pub async fn run_socket_worker(
                 ::log::error!("accept connection: {:#}", err);
             }
             Ok(stream) => {
-                let ip_version = match stream.peer_addr() {
-                    Ok(addr) => IpVersion::canonical_from_ip(addr.ip()),
+                let (ip_version, peer_ip) = match stream.peer_addr() {
+                    Ok(addr) => (IpVersion::canonical_from_ip(addr.ip()), addr.ip()),
                     Err(err) => {
                         ::log::info!("could not extract ip version (v4 or v6): {:#}", err);
 
@@ -170,6 +175,11 @@ pub async fn run_socket_worker(
                     enclose!((
                         config,
                         access_list,
+                        ip_ban_list,
+                        client_ban_list,
+                        client_whitelist,
+                        trusted_proxies,
+                        auto_ban_tracker,
                         in_message_senders,
                         connection_valid_until,
                         opt_tls_config,
@@ -179,6 +189,11 @@ pub async fn run_socket_worker(
                         let runner = ConnectionRunner {
                             config,
                             access_list,
+                            ip_ban_list,
+                            client_ban_list,
+                            client_whitelist,
+                            trusted_proxies,
+                            auto_ban_tracker,
                             in_message_senders,
                             connection_valid_until,
                             out_message_sender,
@@ -187,7 +202,8 @@ pub async fn run_socket_worker(
                             out_message_consumer_id,
                             connection_id,
                             opt_tls_config,
-                            ip_version
+                            ip_version,
+                            peer_ip,
                         };
 
                         runner.run(control_message_senders, close_conn_receiver, stream).await;
