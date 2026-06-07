@@ -1,5 +1,11 @@
 # 更新日志
 
+## v1.3.7
+
+### 修复
+
+- **修复 workspace 依赖版本不匹配**：`Cargo.toml` 中 `[workspace.dependencies]` 的所有 crate 版本仍为 `0.9.0`，与实际版本 `1.3.6` 不匹配，导致 `cargo build` 失败。已全部更新为 `1.3.6`
+
 ## v1.3.6
 
 ### 修复
