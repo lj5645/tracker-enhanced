@@ -1,4 +1,7 @@
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,6 +25,10 @@ pub struct AutoBanConfig {
     pub window_secs: u64,
     /// Ban duration in seconds. Use 0 for permanent ban.
     pub ban_duration_secs: u64,
+    /// Path to write auto-banned IPs. When set, auto-banned IPs are appended
+    /// to this file (one IP per line), making bans persistent across restarts.
+    /// Set to empty string to disable file persistence.
+    pub ban_list_path: PathBuf,
 }
 
 impl Default for AutoBanConfig {
@@ -31,6 +38,7 @@ impl Default for AutoBanConfig {
             threshold: 10,
             window_secs: 60,
             ban_duration_secs: 3600,
+            ban_list_path: PathBuf::from("./ip-ban-list.txt"),
         }
     }
 }
@@ -66,11 +74,14 @@ struct IpRecord {
     count: u32,
     first_violation: Instant,
     banned_until: Option<Instant>,
+    /// Whether this IP has been written to the ban list file
+    written_to_file: bool,
 }
 
 /// Thread-safe auto-ban tracker
 pub struct AutoBanTracker {
     inner: Arc<ArcSwap<AutoBanInner>>,
+    ban_list_path: Option<PathBuf>,
 }
 
 struct AutoBanInner {
@@ -82,7 +93,7 @@ struct AutoBanInner {
 }
 
 impl AutoBanTracker {
-    pub fn new(threshold: u32, window_secs: u64, ban_duration_secs: u64) -> Self {
+    pub fn new(threshold: u32, window_secs: u64, ban_duration_secs: u64, ban_list_path: Option<PathBuf>) -> Self {
         Self {
             inner: Arc::new(ArcSwap::from_pointee(AutoBanInner {
                 records: HashMap::new(),
@@ -91,6 +102,31 @@ impl AutoBanTracker {
                 ban_duration_secs,
                 max_records: 100_000,
             })),
+            ban_list_path,
+        }
+    }
+
+    /// Append a banned IP to the ban list file
+    fn write_ip_to_file(&self, ip: &IpAddr, reason: AutoBanReason) {
+        if let Some(path) = &self.ban_list_path {
+            match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(mut file) => {
+                    let line = format!("{}\n", ip);
+                    if let Err(err) = file.write_all(line.as_bytes()) {
+                        ::log::error!("Failed to write auto-banned IP {} to file: {}", ip, err);
+                    } else {
+                        ::log::info!(
+                            "Auto-banned IP {} written to {} (reason: {})",
+                            ip,
+                            path.display(),
+                            reason.as_str(),
+                        );
+                    }
+                }
+                Err(err) => {
+                    ::log::error!("Failed to open ban list file {}: {}", path.display(), err);
+                }
+            }
         }
     }
 
@@ -145,12 +181,13 @@ impl AutoBanTracker {
                 if let Some(banned_until) = record.banned_until {
                     if now >= banned_until {
                         record.banned_until = None;
+                        record.written_to_file = false;
                     }
                 }
 
                 record.count += 1;
 
-                if record.count >= threshold {
+                if record.count >= threshold && record.banned_until.is_none() {
                     record.banned_until = if ban_duration_secs > 0 {
                         Some(now + std::time::Duration::from_secs(ban_duration_secs))
                     } else {
@@ -163,19 +200,37 @@ impl AutoBanTracker {
                 }
             }
             None => {
+                let should = threshold <= 1;
                 new_inner.records.insert(
                     *ip,
                     IpRecord {
                         count: 1,
                         first_violation: now,
-                        banned_until: None,
+                        banned_until: if should {
+                            if ban_duration_secs > 0 {
+                                Some(now + std::time::Duration::from_secs(ban_duration_secs))
+                            } else {
+                                Some(now + std::time::Duration::from_secs(365 * 24 * 3600))
+                            }
+                        } else {
+                            None
+                        },
+                        written_to_file: false,
                     },
                 );
-                threshold <= 1
+                should
             }
         };
 
         if should_ban {
+            // Write to file before storing
+            self.write_ip_to_file(ip, reason);
+
+            // Mark as written in the record
+            if let Some(record) = new_inner.records.get_mut(ip) {
+                record.written_to_file = true;
+            }
+
             ::log::warn!(
                 "Auto-ban IP {} (reason: {}, count: {}/{})",
                 ip,
@@ -266,10 +321,11 @@ impl Clone for AutoBanInner {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_auto_ban_threshold() {
-        let tracker = AutoBanTracker::new(3, 60, 3600);
+        let tracker = AutoBanTracker::new(3, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
         assert!(!tracker.is_auto_banned(&ip));
@@ -290,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_auto_ban_ipv6() {
-        let tracker = AutoBanTracker::new(2, 60, 3600);
+        let tracker = AutoBanTracker::new(2, 60, 3600, None);
         let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
 
         assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
@@ -300,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_different_ips_independent() {
-        let tracker = AutoBanTracker::new(2, 60, 3600);
+        let tracker = AutoBanTracker::new(2, 60, 3600, None);
         let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
 
@@ -317,10 +373,26 @@ mod tests {
 
     #[test]
     fn test_threshold_one() {
-        let tracker = AutoBanTracker::new(1, 60, 3600);
+        let tracker = AutoBanTracker::new(1, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::MissingUserAgent));
         assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_write_to_file() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let tracker = AutoBanTracker::new(2, 60, 3600, Some(path.clone()));
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+
+        assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+
+        // Check file contains the IP
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("1.2.3.4"));
     }
 }

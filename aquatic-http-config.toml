@@ -257,7 +257,12 @@ threshold = 10
 window_secs = 60
 
 # 封禁时长（秒），0 表示永久封禁
-ban_duration_secs = 3600
+ban_duration_secs = 0
+
+# 自动封禁的 IP 写入此文件（一行一个 IP），重启后仍然生效
+# 设为空字符串则不写入文件（仅内存封禁，重启丢失）
+# 默认与 IP 封禁列表使用同一文件，自动封禁的 IP 会被 ip_ban 模块一起加载
+ban_list_path = "./ip-ban-list.txt"
 
 # ============================================================
 # Prometheus 指标配置（需要编译时启用 metrics feature）

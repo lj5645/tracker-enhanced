@@ -174,7 +174,8 @@ path = "./client-whitelist.txt"
 enabled = true              # 启用自动封禁
 threshold = 10              # 非法请求次数阈值
 window_secs = 60            # 统计时间窗口（秒）
-ban_duration_secs = 3600    # 封禁时长（秒），0 = 永久封禁
+ban_duration_secs = 0       # 封禁时长（秒），0 = 永久封禁
+ban_list_path = "./ip-ban-list.txt"  # 封禁IP写入文件，重启后仍然生效
 ```
 
 ### 性能优化配置
