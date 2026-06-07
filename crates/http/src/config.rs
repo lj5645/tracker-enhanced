@@ -12,6 +12,7 @@ use aquatic_common::{
     request_filter::RequestFilterConfig,
     trusted_proxies::TrustedProxiesConfig,
     cpu_pinning::asc::CpuPinningConfigAsc,
+    auto_ban::AutoBanConfig,
 };
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
@@ -82,6 +83,13 @@ pub struct Config {
     /// Pin workers to specific CPU cores for better cache locality and
     /// reduced context switching. Requires hwloc (`apt-get install libhwloc-dev`).
     pub cpu_pinning: CpuPinningConfigAsc,
+    /// Auto-ban configuration
+    ///
+    /// Automatically ban IPs that exceed a threshold of illegal requests
+    /// within a time window. Illegal requests include: IP already banned,
+    /// SQL injection, path traversal, crawler, missing User-Agent,
+    /// banned client, or not whitelisted client.
+    pub auto_ban: AutoBanConfig,
     #[cfg(feature = "metrics")]
     pub metrics: MetricsConfig,
 }
@@ -103,6 +111,7 @@ impl Default for Config {
             request_filter: RequestFilterConfig::default(),
             trusted_proxies: TrustedProxiesConfig::default(),
             cpu_pinning: CpuPinningConfigAsc::default(),
+            auto_ban: AutoBanConfig::default(),
             #[cfg(feature = "metrics")]
             metrics: Default::default(),
         }

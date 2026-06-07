@@ -156,6 +156,26 @@ impl RequestFilter {
     pub fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
         matches!(self.check_ip(ip), FilterResult::Allowed)
     }
+
+    /// Check if the URI contains SQL injection patterns
+    pub fn is_sql_injection(&self, uri: &str) -> bool {
+        let uri_lower = uri.to_lowercase();
+        self.sql_injection_patterns.iter().any(|p| uri_lower.contains(p))
+    }
+
+    /// Check if the URI contains path traversal patterns
+    pub fn is_path_traversal(&self, uri: &str) -> bool {
+        let uri_lower = uri.to_lowercase();
+        self.path_traversal_patterns.iter().any(|p| uri_lower.contains(p))
+    }
+
+    /// Check if the User-Agent matches crawler patterns
+    pub fn is_crawler(&self, user_agent: Option<&str>) -> bool {
+        user_agent.map_or(false, |ua| {
+            let ua_lower = ua.to_lowercase();
+            self.crawler_user_agents.iter().any(|p| ua_lower.contains(p))
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]

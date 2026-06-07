@@ -210,6 +210,7 @@ impl ListenerState {
                 valid_until.clone(),
                 stream,
                 self.worker_index,
+                self.state.auto_ban_tracker.clone(),
             )
             .await
         };

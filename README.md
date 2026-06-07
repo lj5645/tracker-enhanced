@@ -25,6 +25,7 @@
 - **客户端封禁** - 根据 peer_id 模式封禁吸血客户端
 - **客户端白名单** - 仅允许指定 User-Agent 的客户端访问
 - **请求过滤** - 自动拦截 SQL 注入、路径遍历、爬虫等恶意请求
+- **自动封禁** - 非法请求超过阈值自动封禁 IP，支持时间窗口和封禁时长配置
 - **TCP Keepalive** - 快速检测和清理死连接
 - **连接数限制** - 防止连接风暴导致内存耗尽
 - **Socket 缓冲区** - 可配置的收发缓冲区大小，防止高负载丢包
@@ -163,6 +164,18 @@ path = "./client-whitelist.txt"
 | `filter_missing_user_agent` | 阻止无 User-Agent 的请求 |
 
 > **注意**: `filter_crawlers = true` 会导致 newTrackon 等 Tracker 检测网站显示 "Request filtered"，因为它们使用 python-requests 发请求。如需被检测网站识别，请设为 `false`。
+
+### 自动封禁
+
+当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。非法请求包括：IP 已封禁、SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent、客户端封禁、白名单拦截。
+
+```toml
+[auto_ban]
+enabled = true              # 启用自动封禁
+threshold = 10              # 非法请求次数阈值
+window_secs = 60            # 统计时间窗口（秒）
+ban_duration_secs = 3600    # 封禁时长（秒），0 = 永久封禁
+```
 
 ### 性能优化配置
 

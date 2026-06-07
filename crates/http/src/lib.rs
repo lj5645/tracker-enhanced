@@ -7,6 +7,7 @@ use aquatic_common::{
     trusted_proxies::update_trusted_proxies,
     privileges::PrivilegeDropper,
     rustls_config::create_rustls_config,
+    auto_ban::AutoBanTracker,
     WorkerType,
     ServerStartInstant,
 };
@@ -43,6 +44,21 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     }
 
     let state = State::default();
+
+    // Initialize auto-ban tracker if enabled
+    let state = if config.auto_ban.enabled {
+        let tracker = Arc::new(AutoBanTracker::new(
+            config.auto_ban.threshold,
+            config.auto_ban.window_secs,
+            config.auto_ban.ban_duration_secs,
+        ));
+        State {
+            auto_ban_tracker: Some(tracker),
+            ..state
+        }
+    } else {
+        state
+    };
 
     update_access_list(&config.access_list, &state.access_list)?;
     update_ip_ban_list(&config.ip_ban, &state.ip_ban_list)?;

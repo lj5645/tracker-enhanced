@@ -11,6 +11,7 @@ use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCach
 use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
+use aquatic_common::auto_ban::{AutoBanReason, AutoBanTracker};
 use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
 use aquatic_http_protocol::request::{Request, ScrapeRequest};
@@ -80,6 +81,7 @@ pub(super) async fn run_connection(
     valid_until: Rc<RefCell<ValidUntil>>,
     stream: TcpStream,
     worker_index: usize,
+    auto_ban_tracker: Option<Arc<AutoBanTracker>>,
 ) -> Result<(), ConnectionError> {
     let access_list_cache = create_access_list_cache(&state.access_list);
     let ip_ban_list_cache = create_ip_ban_list_cache(&state.ip_ban_list);
@@ -138,6 +140,7 @@ pub(super) async fn run_connection(
             response_buffer,
             stream,
             worker_index,
+            auto_ban_tracker,
         );
 
         conn.run(opt_peer_addr).await
@@ -157,6 +160,7 @@ pub(super) async fn run_connection(
             response_buffer,
             stream,
             worker_index,
+            auto_ban_tracker,
         );
 
         conn.run(opt_peer_addr).await
@@ -179,6 +183,7 @@ struct Connection<S> {
     response_buffer: Box<[u8; RESPONSE_BUFFER_SIZE]>,
     stream: S,
     worker_index_string: String,
+    auto_ban_tracker: Option<Arc<AutoBanTracker>>,
 }
 
 impl<S> Connection<S>
@@ -201,6 +206,7 @@ where
         response_buffer: Box<[u8; RESPONSE_BUFFER_SIZE]>,
         stream: S,
         worker_index: usize,
+        auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     ) -> Self {
         Self {
             config,
@@ -218,6 +224,7 @@ where
             response_buffer,
             stream,
             worker_index_string: worker_index.to_string(),
+            auto_ban_tracker,
         }
     }
 
@@ -262,11 +269,25 @@ where
         request: &Request,
         raw_request: &str,
     ) -> Result<Option<Response>, ConnectionError> {
+        let peer_ip = peer_addr.get().ip();
+
+        // 0. Auto-ban check (check if IP is already auto-banned)
+        if let Some(tracker) = &self.auto_ban_tracker {
+            if tracker.is_auto_banned(&peer_ip) {
+                ::log::debug!("Auto-banned IP: {}", peer_ip);
+                return Ok(Some(Response::Failure(FailureResponse {
+                    failure_reason: "IP auto-banned".into(),
+                })));
+            }
+        }
+
         // 1. IP ban check
         if self.config.ip_ban.mode.is_on() {
-            let peer_ip = peer_addr.get().ip();
             if self.ip_ban_list_cache.load().is_banned(&peer_ip) {
                 ::log::debug!("IP banned: {}", peer_ip);
+                if let Some(tracker) = &self.auto_ban_tracker {
+                    tracker.record_violation(&peer_ip, AutoBanReason::IpBanned);
+                }
                 return Ok(Some(Response::Failure(FailureResponse {
                     failure_reason: "IP banned".into(),
                 })));
@@ -283,6 +304,21 @@ where
                 filter_config.filter_missing_user_agent,
             ) {
                 ::log::debug!("Request filtered: {}", raw_request);
+
+                // Determine the specific reason for auto-ban tracking
+                if let Some(tracker) = &self.auto_ban_tracker {
+                    let reason = if self.request_filter.is_sql_injection(raw_request) {
+                        AutoBanReason::SqlInjection
+                    } else if self.request_filter.is_path_traversal(raw_request) {
+                        AutoBanReason::PathTraversal
+                    } else if self.request_filter.is_crawler(opt_user_agent.as_deref()) {
+                        AutoBanReason::Crawler
+                    } else {
+                        AutoBanReason::MissingUserAgent
+                    };
+                    tracker.record_violation(&peer_ip, reason);
+                }
+
                 return Ok(Some(Response::Failure(FailureResponse {
                     failure_reason: "Request filtered".into(),
                 })));
@@ -294,6 +330,9 @@ where
             if let Some(user_agent) = opt_user_agent {
                 if !self.client_whitelist_cache.load().is_allowed(user_agent) {
                     ::log::debug!("Client not whitelisted: {}", user_agent);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
+                    }
                     return Ok(Some(Response::Failure(FailureResponse {
                         failure_reason: "Client not allowed".into(),
                     })));
@@ -307,6 +346,9 @@ where
                 let peer_id = String::from_utf8_lossy(&announce_request.peer_id.0);
                 if self.client_ban_list_cache.load().is_banned(&peer_id) {
                     ::log::debug!("Client banned: {}", peer_id);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
+                    }
                     return Ok(Some(Response::Failure(FailureResponse {
                         failure_reason: "Client banned".into(),
                     })));

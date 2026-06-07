@@ -5,6 +5,7 @@ use std::time::Instant;
 use ahash::RandomState;
 
 pub mod access_list;
+pub mod auto_ban;
 pub mod cli;
 pub mod cpu_pinning;
 pub mod ip_ban;
