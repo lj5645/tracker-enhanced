@@ -323,6 +323,14 @@ where
                     failure_reason: "Request filtered".into(),
                 })));
             }
+
+            // Check private IP filter
+            if filter_config.filter_private_ips && !self.request_filter.is_ip_allowed(&peer_ip) {
+                ::log::debug!("Private IP filtered: {}", peer_ip);
+                return Ok(Some(Response::Failure(FailureResponse {
+                    failure_reason: "Private IP not allowed".into(),
+                })));
+            }
         }
 
         // 3. Client whitelist check

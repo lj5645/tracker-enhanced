@@ -191,7 +191,8 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
 
     // Spawn auto-ban flush thread
     if config.auto_ban.enabled {
-        let flush_interval = Duration::from_secs(config.auto_ban.flush_interval_secs);
+        let flush_interval_secs = config.auto_ban.flush_interval_secs.max(1);
+        let flush_interval = Duration::from_secs(flush_interval_secs);
         let auto_ban_tracker = state.auto_ban_tracker.clone();
         let ip_ban_config = config.ip_ban.clone();
         let ip_ban_list = state.ip_ban_list.clone();
@@ -206,14 +207,17 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
                         let flushed = tracker.flush_to_file();
 
                         if !flushed.is_empty() {
-                            // Reload ip_ban_list so it picks up the newly written IPs
+                            // Reload ip_ban_list FIRST so it picks up the newly written IPs
                             if let Err(err) = update_ip_ban_list(&ip_ban_config, &ip_ban_list) {
                                 ::log::error!("auto-ban flush: failed to reload ip_ban_list: {:#}", err);
+                                // Don't remove from memory if reload failed - keep dual protection
                             } else {
                                 ::log::info!(
                                     "auto-ban flush: reloaded ip_ban_list after writing {} IPs",
                                     flushed.len(),
                                 );
+                                // Now safe to remove from memory since ip_ban_list has taken over
+                                tracker.remove_ips(&flushed);
                             }
 
                             // Cleanup expired entries
