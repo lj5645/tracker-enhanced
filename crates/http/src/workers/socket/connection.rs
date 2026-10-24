@@ -544,7 +544,7 @@ where
         let leftover = position - consumed;
 
         if leftover > 0 {
-            let buffer: &mut [u8] = &mut self.request_buffer;
+            let buffer: &mut [u8] = &mut self.request_buffer[..];
 
             buffer.copy_within(consumed..position, 0);
         }

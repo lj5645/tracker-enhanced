@@ -163,7 +163,7 @@ impl WorkerSharedData {
     /// not record auto-ban violations: UDP source addresses are trivially
     /// spoofable, so counting these would let anyone get an arbitrary victim
     /// auto-banned.
-    fn is_list_banned(&self, src: &CanonicalSocketAddr) -> bool {
+    fn is_list_banned(&mut self, src: &CanonicalSocketAddr) -> bool {
         let peer_ip = src.get().ip();
 
         if self.config.ip_ban.mode.is_on() && self.ip_ban_list_cache.load().is_banned(&peer_ip) {

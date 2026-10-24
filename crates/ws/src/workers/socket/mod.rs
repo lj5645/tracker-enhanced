@@ -239,7 +239,9 @@ pub async fn run_socket_worker(
                 );
 
                 match spawn_result {
-                    Ok(task) => task.detach(),
+                    Ok(task) => {
+                        task.detach();
+                    }
                     Err(err) => {
                         // The connection was never started, so remove its
                         // handle instead of leaving it to the cleaning timer.
