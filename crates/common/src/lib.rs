@@ -88,7 +88,7 @@ impl CanonicalSocketAddr {
     pub fn new(addr: SocketAddr) -> Self {
         match addr {
             addr @ SocketAddr::V4(_) => Self(addr),
-            SocketAddr::V6(addr) => match canonical_ip(addr.ip()) {
+            SocketAddr::V6(addr) => match canonical_ip(IpAddr::V6(*addr.ip())) {
                 IpAddr::V4(ip) => Self(SocketAddr::V4(SocketAddrV4::new(ip, addr.port()))),
                 IpAddr::V6(_) => Self(addr.into()),
             },
