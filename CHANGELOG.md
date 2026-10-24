@@ -1,5 +1,26 @@
 # 更新日志
 
+## v1.6.0
+
+### 新增
+
+- **非标准 / 伪装客户端检测**（UDP / HTTP / WebSocket 通用）：
+  - `peer_id_strictness`：校验 peer_id 是否为合法的 Azureus（`-XX1234-`）或 Mainline（`M4-3-0--`）格式，并识别不可能存在的客户端大版本号（如 `-UT9999-`，uTorrent 最高 3.x）
+  - `peer_id_user_agent_mismatch`：检测 peer_id 与 User-Agent 声称的客户端家族是否一致（HTTP / WebSocket）。UA 无法识别为 BT 客户端时跳过，浏览器中的 WebTorrent 不会被误判
+  - 两者均支持 `off` / `warn` / `enforce`：`warn` 只限频写日志并累加 `aquatic_client_identity_checks_total` 指标，`enforce` 拒绝 announce 并计入自动封禁
+  - `peer_id_allowlist_path`：额外放行的 peer_id 前缀文件
+  - 检测与 `[client_ban] mode` 解耦，可在不启用封禁列表时单独使用
+
+### 修复
+
+- **默认封禁列表误封全部 uTorrent**：`client-ban-list.txt` 中的 `-ut0` ~ `-ut9` 会匹配 `-UT3550-` 这类正常 peer_id 的第 4 个字符（版本首位），实际上封禁了所有 uTorrent 版本；`-tx0` ~ `-tx9`、`-bc0` ~ `-bc9` 同理。已移除这些规则，伪造版本号改由 `peer_id_strictness` 检测
+- **内置 FrostWire 前缀写错**：内置吸血客户端前缀 `-fs` 改为 FrostWire 实际使用的 `-fw`
+- `-bt` 同时匹配正版 BitTorrent（`-BT`），已在列表文件中注明该副作用
+
+### 测试
+
+- Runtime Smoke 新增 UDP/HTTP/WS 的 `peer_id_strictness` enforce/warn、UA 不一致、以及仓库自带封禁列表回归场景（真实 `-UT3550-` 必须放行）
+
 ## v1.5.1
 
 ### 修复

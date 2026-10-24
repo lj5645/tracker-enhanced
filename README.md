@@ -148,6 +148,40 @@ ban_vampire_clients = true   # 同时启用内置吸血客户端前缀（-xl/-sd
 
 > `ban_vampire_clients = false` 时只使用列表文件中的规则，内置前缀不再生效。
 
+### 非标准 / 伪装客户端检测
+
+封禁列表只能匹配固定的 peer_id 前缀，无法识别伪造版本号或冒用其他客户端
+身份的客户端。以下两项检测由程序完成，UDP / HTTP / WebSocket 通用
+（User-Agent 检测仅 HTTP / WebSocket 有意义）：
+
+```toml
+[client_ban]
+# off | warn | enforce
+peer_id_strictness = "off"
+peer_id_user_agent_mismatch = "off"
+peer_id_allowlist_path = ""
+```
+
+- `peer_id_strictness`：检查 peer_id 是否为合法的 Azureus（`-XX1234-`）或
+  Mainline（`M4-3-0--`）格式，并识别不可能存在的客户端大版本号（例如
+  `-UT9999-`，uTorrent 最高 3.x）。未知客户端代码只做格式检查。
+- `peer_id_user_agent_mismatch`：peer_id 声称的客户端家族与 User-Agent 声称
+  的不一致时触发，例如 peer_id 是 `-TR4050-` 但 UA 是 qBittorrent。UA 无法
+  识别为 BT 客户端时跳过，因此浏览器里的 WebTorrent 不会被误判。
+- 两者都支持 `off`（不检查）、`warn`（只写日志，每分钟最多一条，并累加
+  `aquatic_client_identity_checks_total` 指标）、`enforce`（拒绝 announce；
+  启用自动封禁时同时计为违规）。
+- `peer_id_allowlist_path` 指向一个每行一个 peer_id 前缀的文件，命中的
+  peer_id 会跳过 `peer_id_strictness`。建议先用 `warn` 观察一段时间，确认
+  没有误判后再切换为 `enforce`。
+- 这两项检测与 `mode` 解耦：即使 `mode = "off"`，只要对应选项不是 `off`
+  就会执行。
+
+> 不要用 `-ut0` ~ `-ut9` 这样的前缀封禁“伪造版本号”：Azureus peer_id 的
+> 第 4 个字符是版本首位，列出 0–9 等于封禁全部 uTorrent（`-tx*`、`-bc*`
+> 同理）。仓库自带的 `client-ban-list.txt` 已移除这类规则，伪造版本请交给
+> `peer_id_strictness`。
+
 ### 客户端白名单
 
 只允许特定的 BitTorrent 客户端访问，不在白名单中的客户端将被拒绝。
@@ -208,7 +242,8 @@ path = "./client-whitelist.txt"
 
 当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。只有已启用的检查才会产生违规记录：
 SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent（取决于 `[request_filter]`）、
-客户端封禁、白名单拦截。已被 IP 封禁的请求会直接拒绝，不重复计数。
+客户端封禁、白名单拦截、非标准 peer_id、peer_id 与 User-Agent 不一致（后两项仅在
+`enforce` 模式下计数）。已被 IP 封禁的请求会直接拒绝，不重复计数。
 
 ```toml
 [auto_ban]

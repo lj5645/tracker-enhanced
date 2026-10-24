@@ -37,6 +37,18 @@ path = "./client-ban-list.txt"
 # 是否同时封禁内置的吸血客户端前缀（-xl、-sd、-qd、-bn、-bc 等）
 ban_vampire_clients = true
 
+# 非标准 peer_id 检测: off, warn, enforce
+# warn 只记录日志（每分钟最多一条），enforce 拒绝 announce。
+# 检查 peer_id 结构（Azureus / Mainline 格式）和明显不可能的大版本号。
+peer_id_strictness = "off"
+
+# peer_id 与 User-Agent 客户端家族一致性检测: off, warn, enforce
+# User-Agent 无法识别为 BT 客户端时跳过，避免误判浏览器客户端。
+peer_id_user_agent_mismatch = "off"
+
+# 额外放行的 peer_id 前缀文件，每行一个前缀（留空表示不使用）
+peer_id_allowlist_path = ""
+
 [client_whitelist]
 # 支持 User-Agent 子串和以 "-" 开头的 peer_id 前缀
 mode = "off"

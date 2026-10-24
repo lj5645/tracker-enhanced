@@ -72,6 +72,8 @@ pub enum AutoBanReason {
     ClientBanned,
     NotWhitelisted,
     PrivateIp,
+    NonStandardPeerId,
+    PeerIdUserAgentMismatch,
 }
 
 impl AutoBanReason {
@@ -84,6 +86,8 @@ impl AutoBanReason {
             Self::ClientBanned => "client_banned",
             Self::NotWhitelisted => "not_whitelisted",
             Self::PrivateIp => "private_ip",
+            Self::NonStandardPeerId => "non_standard_peer_id",
+            Self::PeerIdUserAgentMismatch => "peer_id_user_agent_mismatch",
         }
     }
 }

@@ -32,6 +32,13 @@ INFO_HASH_STR = "0123456789abcdefghij"  # 20 ASCII characters for WS JSON
 PEER_ALLOWED = b"-QB1234-abcdefghijkl"     # 20 bytes, whitelisted via -qb
 PEER_BANNED = b"-BT1234-abcdefghijkl"      # 20 bytes, banned via -bt
 PEER_OTHER = b"-XX1234-abcdefghijkl"       # 20 bytes, not whitelisted
+PEER_UTORRENT = b"-UT3550-abcdefghijkl"    # real uTorrent 3.5.5 id
+PEER_FAKE_VERSION = b"-UT9999-abcdefghijkl"  # impossible uTorrent version
+PEER_TRANSMISSION = b"-TR4050-abcdefghijkl"  # real Transmission 4.x id
+PEER_WEBTORRENT = b"-WW0102-abcdefghijkl"  # WebTorrent (browser UA)
+PEER_NONSTANDARD = b"plaintext-peerid-000"  # not Azureus/Mainline style
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 UA_ALLOWED = "qBittorrent/4.6"
 UA_CRAWLER = "curl/8.0"
@@ -159,16 +166,24 @@ class Server:
             return "(no log)"
 
 
-def list_files(directory, ip_ban="", client_ban="-bt\n", whitelist=""):
+def list_files(directory, ip_ban="", client_ban="-bt\n", whitelist="",
+               peer_id_allowlist=""):
     write(directory / "ip-ban-list.txt", ip_ban or "# empty\n")
     write(directory / "client-ban-list.txt", client_ban or "# empty\n")
     write(directory / "client-whitelist.txt", whitelist or "# empty\n")
+    write(directory / "peer-id-allowlist.txt", peer_id_allowlist or "# empty\n")
     write(directory / "access-list.txt", "# empty\n")
+
+
+def shipped_client_ban_list():
+    """The client ban list shipped in the repository root."""
+    return (REPO_ROOT / "client-ban-list.txt").read_text(encoding="utf-8")
 
 
 def udp_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
                whitelist_on=False, private_filter=False, auto_ban=False,
-               ipv6_only=False, metrics_port=None):
+               ipv6_only=False, metrics_port=None, peer_id_strictness=None,
+               peer_id_allowlist=False):
     metrics = ""
     if metrics_port:
         metrics = f"""
@@ -223,6 +238,8 @@ path = "ip-ban-list.txt"
 [client_ban]
 mode = "{'on' if client_ban_on else 'off'}"
 path = "client-ban-list.txt"
+peer_id_strictness = "{peer_id_strictness or 'off'}"
+peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
 [client_whitelist]
 mode = "{'on' if whitelist_on else 'off'}"
@@ -248,7 +265,8 @@ flush_interval_secs = 1
 def http_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
                 whitelist_on=False, filters=None, private_filter=False,
                 auto_ban=False, proxy=False, trusted_proxy="",
-                dualstack=False, metrics_port=None):
+                dualstack=False, metrics_port=None, peer_id_strictness=None,
+                peer_id_ua_mismatch=None, peer_id_allowlist=False):
     filters = filters or {}
     trusted = f"""
 [trusted_proxies]
@@ -315,6 +333,9 @@ path = "ip-ban-list.txt"
 [client_ban]
 mode = "{'on' if client_ban_on else 'off'}"
 path = "client-ban-list.txt"
+peer_id_strictness = "{peer_id_strictness or 'off'}"
+peer_id_user_agent_mismatch = "{peer_id_ua_mismatch or 'off'}"
+peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
 [client_whitelist]
 mode = "{'on' if whitelist_on else 'off'}"
@@ -341,7 +362,8 @@ flush_interval_secs = 1
 def ws_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
               whitelist_on=False, filters=None, private_filter=False,
               auto_ban=False, trusted_proxy="", address=None,
-              only_ipv6=False, metrics_port=None):
+              only_ipv6=False, metrics_port=None, peer_id_strictness=None,
+              peer_id_ua_mismatch=None, peer_id_allowlist=False):
     if address is None:
         address = f"127.0.0.1:{port}"
     filters = filters or {}
@@ -401,6 +423,9 @@ path = "ip-ban-list.txt"
 [client_ban]
 mode = "{'on' if client_ban_on else 'off'}"
 path = "client-ban-list.txt"
+peer_id_strictness = "{peer_id_strictness or 'off'}"
+peer_id_user_agent_mismatch = "{peer_id_ua_mismatch or 'off'}"
+peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
 [client_whitelist]
 mode = "{'on' if whitelist_on else 'off'}"
@@ -579,6 +604,37 @@ def udp_hotreload(port, server, workdir):
         c.close()
 
 
+def udp_peer_id_format(port):
+    c = UdpClient(port)
+    try:
+        cid = c.connect()
+        check(cid is not None, "udp peer id: connect")
+        check(c.announce(cid, PEER_ALLOWED) is not None,
+              "udp peer id: standard id allowed")
+        check(c.announce(cid, PEER_UTORRENT) is not None,
+              "udp peer id: real uTorrent version allowed")
+        check(c.announce(cid, PEER_NONSTANDARD) is None,
+              "udp peer id: non-standard rejected")
+        check(c.announce(cid, PEER_FAKE_VERSION) is None,
+              "udp peer id: fake version rejected")
+    finally:
+        c.close()
+
+
+def udp_peer_id_warn(port, server):
+    c = UdpClient(port)
+    try:
+        cid = c.connect()
+        check(cid is not None, "udp peer id warn: connect")
+        check(c.announce(cid, PEER_NONSTANDARD) is not None,
+              "udp peer id warn: request allowed")
+    finally:
+        c.close()
+    time.sleep(0.5)
+    check("Azureus" in server.log_tail(lines=200),
+          "udp peer id warn: warning logged")
+
+
 # ---------------------------------------------------------------------------
 # HTTP probes
 # ---------------------------------------------------------------------------
@@ -709,6 +765,51 @@ def http_hotreload(port, server, workdir):
     time.sleep(1.0)
     http_allowed(port, announce_target(PEER_ALLOWED),
                  "http hotreload: unbanned after second SIGUSR2")
+
+
+def http_peer_id_format(port):
+    http_allowed(port, announce_target(PEER_ALLOWED), "http peer id: standard id")
+    http_allowed(port, announce_target(PEER_UTORRENT),
+                 "http peer id: real uTorrent version")
+    http_blocked(port, announce_target(PEER_NONSTANDARD), "Unsupported client",
+                 "http peer id: non-standard rejected")
+    http_blocked(port, announce_target(PEER_FAKE_VERSION), "Unsupported client",
+                 "http peer id: fake version rejected")
+
+
+def http_peer_id_ua(port):
+    http_allowed(port, announce_target(PEER_ALLOWED),
+                 "http peer id ua: matching client")
+    http_blocked(port, announce_target(PEER_TRANSMISSION),
+                 "Client identity mismatch", "http peer id ua: mismatched family",
+                 user_agent="qBittorrent/4.6")
+    http_allowed(port, announce_target(PEER_TRANSMISSION),
+                 "http peer id ua: matching family",
+                 user_agent="Transmission/4.0.2")
+    # A browser User-Agent identifies no BitTorrent client, so WebTorrent in a
+    # browser tab must not be flagged.
+    http_allowed(port, announce_target(PEER_WEBTORRENT),
+                 "http peer id ua: browser UA skipped",
+                 user_agent="Mozilla/5.0")
+
+
+def http_peer_id_warn(port, server):
+    http_allowed(port, announce_target(PEER_NONSTANDARD),
+                 "http peer id warn: request allowed")
+    time.sleep(0.5)
+    check("Azureus" in server.log_tail(lines=200),
+          "http peer id warn: warning logged")
+
+
+def http_shipped_client_ban(port):
+    # Regression for the old "-ut0".."-ut9" entries, which matched every
+    # uTorrent version and effectively banned the whole client family.
+    http_allowed(port, announce_target(PEER_UTORRENT),
+                 "shipped list: real uTorrent allowed")
+    http_allowed(port, announce_target(PEER_ALLOWED),
+                 "shipped list: qBittorrent allowed")
+    http_blocked(port, announce_target(PEER_BANNED), "Client banned",
+                 "shipped list: BitThief banned")
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +980,29 @@ def ws_handshake_filters(port):
     ws_allowed(port, PEER_ALLOWED, "ws handshake filters: normal client allowed")
 
 
+def ws_peer_id_format(port):
+    ws_allowed(port, PEER_ALLOWED, "ws peer id: standard id")
+    ws_allowed(port, PEER_UTORRENT, "ws peer id: real uTorrent version")
+    ws_blocked(port, PEER_NONSTANDARD, "ws peer id: non-standard rejected")
+    ws_blocked(port, PEER_FAKE_VERSION, "ws peer id: fake version rejected")
+
+
+def ws_peer_id_ua(port):
+    ws_allowed(port, PEER_ALLOWED, "ws peer id ua: matching client")
+    ws_blocked(port, PEER_TRANSMISSION, "ws peer id ua: mismatched family")
+    ws_allowed(port, PEER_TRANSMISSION, "ws peer id ua: matching family",
+               user_agent="Transmission/4.0.2")
+    ws_allowed(port, PEER_WEBTORRENT, "ws peer id ua: browser UA skipped",
+               user_agent="Mozilla/5.0")
+
+
+def ws_peer_id_warn(port, server):
+    ws_allowed(port, PEER_NONSTANDARD, "ws peer id warn: request allowed")
+    time.sleep(0.5)
+    check("Azureus" in server.log_tail(lines=200),
+          "ws peer id warn: warning logged")
+
+
 def get_metrics(port, timeout=15):
     url = f"http://127.0.0.1:{port}/metrics"
     deadline = time.time() + timeout
@@ -977,6 +1101,14 @@ def build_scenarios():
                  lambda d, p: (list_files(d), udp_config(d, p, metrics_port=18400)),
                  lambda s, d: (udp_basic(s.port), get_metrics(18400)),
                  metrics_port=18400),
+        scenario("udp_peer_id_format", "udp", 18111,
+                 lambda d, p: (list_files(d),
+                               udp_config(d, p, peer_id_strictness="enforce")),
+                 lambda s, d: udp_peer_id_format(s.port)),
+        scenario("udp_peer_id_warn", "udp", 18112,
+                 lambda d, p: (list_files(d),
+                               udp_config(d, p, peer_id_strictness="warn")),
+                 lambda s, d: udp_peer_id_warn(s.port, s)),
 
         # HTTP
         scenario("http_basic", "http", 18200,
@@ -1028,6 +1160,22 @@ def build_scenarios():
                  lambda d, p: (list_files(d), http_config(d, p, metrics_port=18411)),
                  lambda s, d: (http_basic(s.port), get_metrics(18411)),
                  metrics_port=18411),
+        scenario("http_peer_id_format", "http", 18212,
+                 lambda d, p: (list_files(d),
+                               http_config(d, p, peer_id_strictness="enforce")),
+                 lambda s, d: http_peer_id_format(s.port)),
+        scenario("http_peer_id_ua", "http", 18213,
+                 lambda d, p: (list_files(d),
+                               http_config(d, p, peer_id_ua_mismatch="enforce")),
+                 lambda s, d: http_peer_id_ua(s.port)),
+        scenario("http_peer_id_warn", "http", 18214,
+                 lambda d, p: (list_files(d),
+                               http_config(d, p, peer_id_strictness="warn")),
+                 lambda s, d: http_peer_id_warn(s.port, s)),
+        scenario("http_shipped_client_ban", "http", 18215,
+                 lambda d, p: (list_files(d, client_ban=shipped_client_ban_list()),
+                               http_config(d, p)),
+                 lambda s, d: http_shipped_client_ban(s.port)),
 
         # WebSocket
         scenario("ws_basic", "ws", 18300,
@@ -1081,6 +1229,18 @@ def build_scenarios():
                  lambda d, p: (list_files(d), ws_config(d, p, metrics_port=18421)),
                  lambda s, d: (ws_basic(s.port), get_metrics(18421)),
                  metrics_port=18421),
+        scenario("ws_peer_id_format", "ws", 18312,
+                 lambda d, p: (list_files(d),
+                               ws_config(d, p, peer_id_strictness="enforce")),
+                 lambda s, d: ws_peer_id_format(s.port)),
+        scenario("ws_peer_id_ua", "ws", 18313,
+                 lambda d, p: (list_files(d),
+                               ws_config(d, p, peer_id_ua_mismatch="enforce")),
+                 lambda s, d: ws_peer_id_ua(s.port)),
+        scenario("ws_peer_id_warn", "ws", 18314,
+                 lambda d, p: (list_files(d),
+                               ws_config(d, p, peer_id_strictness="warn")),
+                 lambda s, d: ws_peer_id_warn(s.port, s)),
     ]
 
 

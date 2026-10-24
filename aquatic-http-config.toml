@@ -211,6 +211,20 @@ ban_vampire_clients = true
 #   -bc      # BitComet
 path = "./client-ban-list.txt"
 
+# 非标准 peer_id 检测: off, warn, enforce
+# warn 只记录日志（每分钟最多一条），enforce 拒绝 announce。
+# 检查 peer_id 结构（Azureus / Mainline 格式）和明显不可能的大版本号，
+# 例如 -UT9999-（uTorrent 最高 3.x）。不受 mode 影响。
+peer_id_strictness = "off"
+
+# peer_id 与 User-Agent 客户端家族一致性检测: off, warn, enforce
+# 仅 HTTP / WebSocket 有效。User-Agent 无法识别为 BT 客户端时跳过，
+# 避免把浏览器里的 WebTorrent 误判为伪装客户端。
+peer_id_user_agent_mismatch = "off"
+
+# 额外放行的 peer_id 前缀文件，每行一个前缀（留空表示不使用）
+peer_id_allowlist_path = ""
+
 # ============================================================
 # 客户端白名单配置
 # ============================================================

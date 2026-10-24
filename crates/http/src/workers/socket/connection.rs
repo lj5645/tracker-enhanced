@@ -7,7 +7,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use aquatic_common::access_list::{create_access_list_cache, AccessListCache};
 use aquatic_common::ip_ban::{create_ip_ban_list_cache, IpBanListCache};
-use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCache};
+use aquatic_common::client_ban::{
+    create_client_ban_list_cache, ClientBanListCache, IdentityCheck,
+};
 use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
@@ -64,6 +66,22 @@ pub(crate) fn response_buffer_size(config: &Config) -> usize {
         .saturating_add(2)
         .saturating_add(announce_body.max(scrape_body))
 }
+
+/// Count a client identity check outcome. Warn-mode checks only increment the
+/// counter, so operators can see them on the metrics endpoint before enforcing.
+#[cfg(feature = "metrics")]
+fn count_identity_check(check: &'static str, result: &'static str) {
+    ::metrics::counter!(
+        "aquatic_client_identity_checks_total",
+        "protocol" => "http",
+        "check" => check,
+        "result" => result,
+    )
+    .increment(1);
+}
+
+#[cfg(not(feature = "metrics"))]
+fn count_identity_check(_check: &'static str, _result: &'static str) {}
 
 /// Extract the request target from the request line, for example
 /// `/announce?info_hash=...` from `GET /announce?info_hash=... HTTP/1.1`.
@@ -362,12 +380,14 @@ where
             }
         }
 
-        let opt_peer_id = match request {
-            Request::Announce(announce_request) => {
-                Some(String::from_utf8_lossy(&announce_request.peer_id.0).into_owned())
-            }
+        let opt_peer_id_bytes = match request {
+            Request::Announce(announce_request) => Some(announce_request.peer_id.0),
             _ => None,
         };
+
+        let opt_peer_id = opt_peer_id_bytes
+            .as_ref()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
 
         // 2. Request filter check
         {
@@ -446,7 +466,68 @@ where
             }
         }
 
-        // 4. Client whitelist check
+        // 4. Client identity checks (announce requests only)
+        //
+        // These are independent of `client_ban.mode`: they detect clients that
+        // lie about who they are rather than matching a ban list entry.
+        if let Some(peer_id_bytes) = opt_peer_id_bytes {
+            let client_ban_list = self.client_ban_list_cache.load();
+
+            let strictness = self.config.client_ban.peer_id_strictness;
+
+            if !strictness.is_off() {
+                match client_ban_list.check_peer_id_format(&peer_id_bytes, strictness) {
+                    IdentityCheck::Ok => {}
+                    IdentityCheck::Warned => {
+                        count_identity_check("peer_id_format", "warn");
+                    }
+                    IdentityCheck::Rejected => {
+                        count_identity_check("peer_id_format", "reject");
+
+                        if let Some(tracker) = &self.auto_ban_tracker {
+                            tracker.record_violation(&peer_ip, AutoBanReason::NonStandardPeerId);
+                        }
+
+                        return Ok(Some(Response::Failure(FailureResponse {
+                            failure_reason: "Unsupported client".into(),
+                        })));
+                    }
+                }
+            }
+
+            let user_agent_mode = self.config.client_ban.peer_id_user_agent_mismatch;
+
+            if !user_agent_mode.is_off() {
+                if let Some(user_agent) = opt_user_agent.as_deref() {
+                    match client_ban_list.check_peer_id_user_agent(
+                        &peer_id_bytes,
+                        user_agent,
+                        user_agent_mode,
+                    ) {
+                        IdentityCheck::Ok => {}
+                        IdentityCheck::Warned => {
+                            count_identity_check("user_agent_mismatch", "warn");
+                        }
+                        IdentityCheck::Rejected => {
+                            count_identity_check("user_agent_mismatch", "reject");
+
+                            if let Some(tracker) = &self.auto_ban_tracker {
+                                tracker.record_violation(
+                                    &peer_ip,
+                                    AutoBanReason::PeerIdUserAgentMismatch,
+                                );
+                            }
+
+                            return Ok(Some(Response::Failure(FailureResponse {
+                                failure_reason: "Client identity mismatch".into(),
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Client whitelist check
         if self.config.client_whitelist.mode.is_on()
             && !self
                 .client_whitelist_cache

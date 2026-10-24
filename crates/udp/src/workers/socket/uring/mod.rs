@@ -13,7 +13,9 @@ use std::sync::atomic::Ordering;
 use anyhow::Context;
 use aquatic_common::access_list::AccessListCache;
 use aquatic_common::ip_ban::{IpBanListCache, create_ip_ban_list_cache};
-use aquatic_common::client_ban::{ClientBanListCache, create_client_ban_list_cache};
+use aquatic_common::client_ban::{
+    create_client_ban_list_cache, ClientBanListCache, IdentityCheck,
+};
 use aquatic_common::client_whitelist::{ClientWhitelistCache, create_client_whitelist_cache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanReason};
@@ -62,6 +64,21 @@ const USER_DATA_PULSE_TIMEOUT: u64 = u64::MAX - 2;
 
 const SOCKET_IDENTIFIER_V4: Fixed = Fixed(0);
 const SOCKET_IDENTIFIER_V6: Fixed = Fixed(1);
+
+/// Count a client identity check outcome.
+#[cfg(feature = "prometheus")]
+fn count_identity_check(check: &'static str, result: &'static str) {
+    ::metrics::counter!(
+        "aquatic_client_identity_checks_total",
+        "protocol" => "udp",
+        "check" => check,
+        "result" => result,
+    )
+    .increment(1);
+}
+
+#[cfg(not(feature = "prometheus"))]
+fn count_identity_check(_check: &'static str, _result: &'static str) {}
 
 thread_local! {
     /// Store IoUring instance here so that it can be accessed in BufRing::drop
@@ -555,8 +572,9 @@ impl SocketWorker {
 
         let check_client_ban = self.config.client_ban.mode.is_on();
         let check_whitelist = self.config.client_whitelist.mode.is_on();
+        let check_peer_id = !self.config.client_ban.peer_id_strictness.is_off();
 
-        if !check_client_ban && !check_whitelist {
+        if !check_client_ban && !check_whitelist && !check_peer_id {
             return false;
         }
 
@@ -573,6 +591,34 @@ impl SocketWorker {
                 tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
             }
             return true;
+        }
+
+        // Client identity check. UDP has no User-Agent, so only the peer id
+        // itself is validated here.
+        if check_peer_id {
+            let strictness = self.config.client_ban.peer_id_strictness;
+
+            match self
+                .client_ban_list_cache
+                .load()
+                .check_peer_id_format(&peer_id.0, strictness)
+            {
+                IdentityCheck::Ok => {}
+                IdentityCheck::Warned => {
+                    count_identity_check("peer_id_format", "warn");
+                }
+                IdentityCheck::Rejected => {
+                    count_identity_check("peer_id_format", "reject");
+
+                    ::log::debug!("Client identity rejected: {}", peer_id_str);
+
+                    if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::NonStandardPeerId);
+                    }
+
+                    return true;
+                }
+            }
         }
 
         // Client whitelist check

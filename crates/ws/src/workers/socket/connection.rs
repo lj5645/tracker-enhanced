@@ -9,7 +9,9 @@ use std::time::Duration;
 use anyhow::Context;
 use aquatic_common::access_list::{create_access_list_cache, AccessListArcSwap, AccessListCache};
 use aquatic_common::ip_ban::{IpBanListArcSwap, IpBanListCache, create_ip_ban_list_cache};
-use aquatic_common::client_ban::{ClientBanListArcSwap, ClientBanListCache, create_client_ban_list_cache};
+use aquatic_common::client_ban::{
+    create_client_ban_list_cache, ClientBanListArcSwap, ClientBanListCache, IdentityCheck,
+};
 use aquatic_common::client_whitelist::{ClientWhitelistArcSwap, ClientWhitelistCache, create_client_whitelist_cache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanTracker, AutoBanReason};
@@ -48,6 +50,21 @@ use crate::workers::socket::calculate_in_message_consumer_index;
 
 #[cfg(feature = "metrics")]
 use crate::workers::socket::{ip_version_to_metrics_str, WORKER_INDEX};
+
+/// Count a client identity check outcome.
+#[cfg(feature = "metrics")]
+fn count_identity_check(check: &'static str, result: &'static str) {
+    ::metrics::counter!(
+        "aquatic_client_identity_checks_total",
+        "protocol" => "ws",
+        "check" => check,
+        "result" => result,
+    )
+    .increment(1);
+}
+
+#[cfg(not(feature = "metrics"))]
+fn count_identity_check(_check: &'static str, _result: &'static str) {}
 
 /// Optional second tuple field is for peer id hex representation
 #[cfg(feature = "metrics")]
@@ -408,7 +425,64 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
             }
         }
 
-        // 5. Client whitelist check. A single check covers both pattern types:
+        // 5. Client identity checks (announce messages only)
+        //
+        // These are independent of `client_ban.mode`: they detect clients that
+        // lie about who they are rather than matching a ban list entry.
+        if let Some(peer_id) = peer_id_opt {
+            let client_ban_list = self.client_ban_list_cache.load();
+
+            let strictness = self.config.client_ban.peer_id_strictness;
+
+            if !strictness.is_off() {
+                match client_ban_list.check_peer_id_format(&peer_id.0, strictness) {
+                    IdentityCheck::Ok => {}
+                    IdentityCheck::Warned => {
+                        count_identity_check("peer_id_format", "warn");
+                    }
+                    IdentityCheck::Rejected => {
+                        count_identity_check("peer_id_format", "reject");
+
+                        if let Some(tracker) = &self.auto_ban_tracker {
+                            tracker.record_violation(&self.peer_ip, AutoBanReason::NonStandardPeerId);
+                        }
+
+                        return true;
+                    }
+                }
+            }
+
+            let user_agent_mode = self.config.client_ban.peer_id_user_agent_mismatch;
+
+            if !user_agent_mode.is_off() {
+                if let Some(user_agent) = self.handshake_user_agent.as_deref() {
+                    match client_ban_list.check_peer_id_user_agent(
+                        &peer_id.0,
+                        user_agent,
+                        user_agent_mode,
+                    ) {
+                        IdentityCheck::Ok => {}
+                        IdentityCheck::Warned => {
+                            count_identity_check("user_agent_mismatch", "warn");
+                        }
+                        IdentityCheck::Rejected => {
+                            count_identity_check("user_agent_mismatch", "reject");
+
+                            if let Some(tracker) = &self.auto_ban_tracker {
+                                tracker.record_violation(
+                                    &self.peer_ip,
+                                    AutoBanReason::PeerIdUserAgentMismatch,
+                                );
+                            }
+
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Client whitelist check. A single check covers both pattern types:
         // previously the peer_id check returned early, making a User-Agent
         // whitelist useless for announce messages.
         if self.config.client_whitelist.mode.is_on()
