@@ -19,7 +19,9 @@ env:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    # Pin to 24.04: glommio 0.9 / bundled liburing fails to compile against
+    # the newer kernel headers shipped with ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
