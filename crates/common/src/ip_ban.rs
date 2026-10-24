@@ -130,6 +130,16 @@ impl IpBanList {
             let ip: IpAddr = parts[0].parse()?;
             let prefix_len: u8 = parts[1].parse()?;
 
+            // Normalize IPv4-mapped networks (`::ffff:a.b.c.d/n`) to plain
+            // IPv4 so that an entry written in mapped notation matches IPv4
+            // peers (and vice versa).
+            let (ip, prefix_len) = match canonical_ip(ip) {
+                IpAddr::V4(v4) if ip.is_ipv6() && prefix_len >= 96 => {
+                    (IpAddr::V4(v4), prefix_len - 96)
+                }
+                _ => (ip, prefix_len),
+            };
+
             let max_prefix = match ip {
                 IpAddr::V4(_) => 32,
                 IpAddr::V6(_) => 128,
@@ -145,16 +155,20 @@ impl IpBanList {
             });
         } else {
             let ip: IpAddr = line.parse()?;
-            self.banned_ips.insert(ip);
+            // Store the canonical form so `::ffff:a.b.c.d` bans match plain
+            // IPv4 peers too.
+            self.banned_ips.insert(canonical_ip(ip));
         }
 
         Ok(())
     }
 
     pub fn is_banned(&self, ip: &IpAddr) -> bool {
-        // Dual-stack listeners report IPv4 peers as `::ffff:a.b.c.d`. Match
-        // both the address as received and its canonical IPv4 form so entries
-        // written in either notation (and IPv4 CIDR ranges) keep working.
+        // Dual-stack listeners report IPv4 peers as `::ffff:a.b.c.d`. Entries
+        // are normalized at load time, but peers are canonicalized here as
+        // well so callers cannot accidentally miss a ban by passing a mapped
+        // address. The raw address is still checked first, which keeps wider
+        // entries such as `::ffff:0:0/96` working.
         if self.matches(ip) {
             return true;
         }
@@ -270,6 +284,17 @@ mod tests {
         list.add_entry("::ffff:203.0.113.9").unwrap();
 
         assert!(list.is_banned(&"203.0.113.9".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_mapped_cidr_entry_matches_ipv4_peer() {
+        // ::ffff:10.0.0.0/104 is the mapped spelling of 10.0.0.0/8.
+        let mut list = IpBanList::default();
+        list.add_entry("::ffff:10.0.0.0/104").unwrap();
+
+        assert!(list.is_banned(&"10.1.2.3".parse().unwrap()));
+        assert!(list.is_banned(&"::ffff:10.9.9.9".parse().unwrap()));
+        assert!(!list.is_banned(&"11.1.2.3".parse().unwrap()));
     }
 
     #[test]
