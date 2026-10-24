@@ -110,6 +110,21 @@ pub fn last_forwarded_for_ip(header: &str) -> Option<IpAddr> {
 
 pub type TrustedProxiesArcSwap = ArcSwap<TrustedProxies>;
 
+/// Parse a trusted proxy entry as either a CIDR network or a bare IP address.
+///
+/// A bare address is treated as a single-host network (`/32` or `/128`), since
+/// the configuration documents plain IPs as valid entries.
+fn parse_trusted_proxy_entry(line: &str) -> Option<IpNetwork> {
+    if let Ok(network) = line.parse::<IpNetwork>() {
+        return Some(network);
+    }
+
+    let ip = line.parse::<IpAddr>().ok()?;
+    let prefix = if ip.is_ipv4() { 32 } else { 128 };
+
+    format!("{}/{}", ip, prefix).parse().ok()
+}
+
 pub fn update_trusted_proxies(
     config: &TrustedProxiesConfig,
     trusted_proxies: &Arc<TrustedProxiesArcSwap>,
@@ -124,10 +139,10 @@ pub fn update_trusted_proxies(
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            match line.parse::<IpNetwork>() {
-                Ok(network) => networks.push(network),
-                Err(err) => {
-                    ::log::warn!("Failed to parse trusted proxy entry '{}': {}", line, err);
+            match parse_trusted_proxy_entry(line) {
+                Some(network) => networks.push(network),
+                None => {
+                    ::log::warn!("Failed to parse trusted proxy entry '{}'", line);
                 }
             }
         }
@@ -150,13 +165,30 @@ mod tests {
     fn test_trusted_proxies() {
         let proxies = TrustedProxies::from_iter(vec![
             "192.168.1.0/24".parse().unwrap(),
-            "10.0.0.1".parse().unwrap(),
+            "10.0.0.1/32".parse().unwrap(),
         ]);
 
         assert!(proxies.is_trusted("192.168.1.100".parse().unwrap()));
         assert!(proxies.is_trusted("10.0.0.1".parse().unwrap()));
         assert!(!proxies.is_trusted("10.0.0.2".parse().unwrap()));
         assert!(!proxies.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_parse_trusted_proxy_entry() {
+        assert_eq!(
+            parse_trusted_proxy_entry("10.0.0.1").unwrap(),
+            "10.0.0.1/32".parse().unwrap()
+        );
+        assert_eq!(
+            parse_trusted_proxy_entry("::1").unwrap(),
+            "::1/128".parse().unwrap()
+        );
+        assert_eq!(
+            parse_trusted_proxy_entry("192.168.0.0/16").unwrap(),
+            "192.168.0.0/16".parse().unwrap()
+        );
+        assert!(parse_trusted_proxy_entry("not-an-ip").is_none());
     }
 
     #[test]
