@@ -178,15 +178,15 @@ mod tests {
     fn test_parse_trusted_proxy_entry() {
         assert_eq!(
             parse_trusted_proxy_entry("10.0.0.1").unwrap(),
-            "10.0.0.1/32".parse().unwrap()
+            "10.0.0.1/32".parse::<IpNetwork>().unwrap()
         );
         assert_eq!(
             parse_trusted_proxy_entry("::1").unwrap(),
-            "::1/128".parse().unwrap()
+            "::1/128".parse::<IpNetwork>().unwrap()
         );
         assert_eq!(
             parse_trusted_proxy_entry("192.168.0.0/16").unwrap(),
-            "192.168.0.0/16".parse().unwrap()
+            "192.168.0.0/16".parse::<IpNetwork>().unwrap()
         );
         assert!(parse_trusted_proxy_entry("not-an-ip").is_none());
     }
