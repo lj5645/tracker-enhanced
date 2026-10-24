@@ -881,11 +881,21 @@ def get_metrics(port, timeout=15):
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 body = response.read().decode("utf-8", errors="replace")
-            check("aquatic_" in body, f"metrics endpoint {port} exposes aquatic metrics")
-            return
         except Exception as exc:  # noqa: BLE001 - retried below
             last_error = exc
             time.sleep(0.5)
+            continue
+
+        if "aquatic_" in body:
+            check(True, f"metrics endpoint {port} exposes aquatic metrics")
+            return
+
+        # The endpoint can answer before any metric has been registered yet.
+        # Treat that as "not ready" and retry without counting a failed
+        # assertion for what is only an intermediate state.
+        last_error = "response contains no aquatic_ metrics yet"
+        time.sleep(0.5)
+
     raise AssertionError(f"metrics endpoint {port} not ready: {last_error}")
 
 
