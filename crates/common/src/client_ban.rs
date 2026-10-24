@@ -78,7 +78,9 @@ pub struct ClientBanConfig {
     ///
     /// One prefix per line, matched case-insensitively at the start of the
     /// peer id. Intended for legitimate clients whose ids are not in the
-    /// built-in format tables. Only affects `peer_id_strictness`.
+    /// built-in format tables, or whose User-Agent is misread. Exempts the
+    /// client from both `peer_id_strictness` and
+    /// `peer_id_user_agent_mismatch`.
     pub peer_id_allowlist_path: PathBuf,
 }
 

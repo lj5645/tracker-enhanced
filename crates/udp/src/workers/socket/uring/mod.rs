@@ -163,7 +163,7 @@ impl SocketWorker {
         let access_list_cache = create_access_list_cache(&shared_state.access_list);
         let ip_ban_list_cache = create_ip_ban_list_cache(&shared_state.ip_ban_list);
         let client_ban_list_cache = create_client_ban_list_cache(&shared_state.client_ban_list);
-            let request_filter = RequestFilter::new();
+        let request_filter = RequestFilter::new();
 
         let send_buffers = SendBuffers::new(send_buffer_entries as usize);
         let recv_helper_v4 = RecvHelperV4::new(&config);
@@ -233,7 +233,7 @@ impl SocketWorker {
             access_list_cache,
             ip_ban_list_cache,
             client_ban_list_cache,
-                request_filter,
+            request_filter,
             validator,
             opt_socket_ipv4,
             opt_socket_ipv6,
