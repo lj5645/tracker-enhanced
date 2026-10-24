@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(
             parse_request(&config, request.as_bytes())
                 .unwrap()
-                .1
+                .opt_peer_ip
                 .unwrap(),
             expected_ip
         )
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(
             parse_request(&config, request.as_bytes())
                 .unwrap()
-                .1
+                .opt_peer_ip
                 .unwrap(),
             expected_ip
         )
