@@ -12,7 +12,6 @@ use aquatic_common::ip_ban::{IpBanListArcSwap, IpBanListCache, create_ip_ban_lis
 use aquatic_common::client_ban::{
     create_client_ban_list_cache, ClientBanListArcSwap, ClientBanListCache, IdentityCheck,
 };
-use aquatic_common::client_whitelist::{ClientWhitelistArcSwap, ClientWhitelistCache, create_client_whitelist_cache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanTracker, AutoBanReason};
 use aquatic_common::trusted_proxies::{last_forwarded_for_ip, TrustedProxiesArcSwap};
@@ -75,7 +74,6 @@ pub struct ConnectionRunner {
     pub access_list: Arc<AccessListArcSwap>,
     pub ip_ban_list: Arc<IpBanListArcSwap>,
     pub client_ban_list: Arc<ClientBanListArcSwap>,
-    pub client_whitelist: Arc<ClientWhitelistArcSwap>,
     pub trusted_proxies: Arc<TrustedProxiesArcSwap>,
     pub auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     pub in_message_senders: Rc<Senders<(InMessageMeta, InMessage)>>,
@@ -296,7 +294,6 @@ impl ConnectionRunner {
         let access_list_cache = create_access_list_cache(&self.access_list);
         let ip_ban_list_cache = create_ip_ban_list_cache(&self.ip_ban_list);
         let client_ban_list_cache = create_client_ban_list_cache(&self.client_ban_list);
-        let client_whitelist_cache = create_client_whitelist_cache(&self.client_whitelist);
 
         let config = self.config.clone();
 
@@ -306,7 +303,6 @@ impl ConnectionRunner {
                 access_list_cache,
                 ip_ban_list_cache,
                 client_ban_list_cache,
-                client_whitelist_cache,
                 request_filter,
                 auto_ban_tracker: self.auto_ban_tracker,
                 in_message_senders: self.in_message_senders,
@@ -362,7 +358,6 @@ struct ConnectionReader<S> {
     access_list_cache: AccessListCache,
     ip_ban_list_cache: IpBanListCache,
     client_ban_list_cache: ClientBanListCache,
-    client_whitelist_cache: ClientWhitelistCache,
     request_filter: RequestFilter,
     auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     in_message_senders: Rc<Senders<(InMessageMeta, InMessage)>>,
@@ -480,26 +475,6 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
                     }
                 }
             }
-        }
-
-        // 6. Client whitelist check. A single check covers both pattern types:
-        // previously the peer_id check returned early, making a User-Agent
-        // whitelist useless for announce messages.
-        if self.config.client_whitelist.mode.is_on()
-            && !self.client_whitelist_cache.load().allows(
-                peer_id_str.as_deref(),
-                self.handshake_user_agent.as_deref(),
-            )
-        {
-            ::log::debug!(
-                "Client not whitelisted (peer_id: {:?}, user agent: {:?})",
-                peer_id_str,
-                self.handshake_user_agent
-            );
-            if let Some(tracker) = &self.auto_ban_tracker {
-                tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
-            }
-            return true;
         }
 
         false

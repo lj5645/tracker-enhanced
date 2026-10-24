@@ -23,7 +23,6 @@
 
 - **IP 封禁** - 支持单个 IP 和 CIDR 网段封禁
 - **客户端封禁** - 根据 peer_id 模式封禁吸血客户端
-- **客户端白名单** - 按 User-Agent 子串或 peer_id 前缀限制客户端（HTTP / UDP / WebSocket 通用）
 - **请求过滤** - 自动拦截 SQL 注入、路径遍历、爬虫等恶意请求
 - **自动封禁** - 非法请求超过阈值自动封禁 IP，支持时间窗口和封禁时长配置
 - **TCP Keepalive** - 快速检测和清理死连接
@@ -187,46 +186,6 @@ peer_id_allowlist_path = ""
 > 同理）。仓库自带的 `client-ban-list.txt` 已移除这类规则，伪造版本请交给
 > `peer_id_strictness`。
 
-### 客户端白名单
-
-只允许特定的 BitTorrent 客户端访问，不在白名单中的客户端将被拒绝。
-白名单不会覆盖客户端封禁：同一客户端即使匹配白名单，只要命中封禁列表仍然会被拒绝。
-
-**配置文件**: `client-whitelist.txt`
-
-```
-# User-Agent 子串（HTTP / WebSocket，不区分大小写）
-utorrent
-transmission
-qbittorrent
-deluge
-libtorrent
-
-# peer_id 前缀（UDP / WebSocket，以 "-" 开头）
--ut
--tr
--qb
--de
--lt
-```
-
-**配置项**:
-
-```toml
-[client_whitelist]
-mode = "on"
-path = "./client-whitelist.txt"
-```
-
-匹配规则：
-
-- 不以 `-` 开头的行：User-Agent 包含匹配，不区分大小写。
-- 以 `-` 开头的行：peer_id 前缀匹配，不区分大小写。
-- 两种行可以混在同一个文件中。只要有任意一个适用的模式匹配就放行。
-- UDP 没有 User-Agent，所以使用 UDP 时文件里必须至少有一个 `-` 开头的
-  peer_id 前缀，否则启动会报错。
-- 只有 `client_whitelist` 模式为 `on` 时才会检查。
-
 ### 请求过滤
 
 自动过滤恶意请求：
@@ -247,7 +206,7 @@ path = "./client-whitelist.txt"
 
 当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。只有已启用的检查才会产生违规记录：
 SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent（取决于 `[request_filter]`）、
-客户端封禁、白名单拦截、非标准 peer_id、peer_id 与 User-Agent 不一致（后两项仅在
+客户端封禁、非标准 peer_id、peer_id 与 User-Agent 不一致（后两项仅在
 `enforce` 模式下计数）。已被 IP 封禁的请求会直接拒绝，不重复计数。
 
 ```toml
@@ -332,10 +291,10 @@ core_offset = 0
 | 信号 | 功能 |
 |------|------|
 | `SIGUSR1` | 重载访问列表和 TLS 证书 |
-| `SIGUSR2` | 重载 IP 封禁、客户端封禁、客户端白名单、可信代理列表 |
+| `SIGUSR2` | 重载 IP 封禁、客户端封禁、可信代理列表 |
 
 ```bash
-# 重载封禁和白名单列表
+# 重载封禁列表和可信代理列表
 kill -SIGUSR2 $(pgrep -f "aquatic.*http")
 ```
 
@@ -385,7 +344,6 @@ crates/
 │   └── src/
 │       ├── ip_ban.rs        # IP 封禁
 │       ├── client_ban.rs    # 客户端封禁
-│       ├── client_whitelist.rs  # 客户端白名单
 │       ├── request_filter.rs    # 请求过滤
 │       ├── trusted_proxies.rs   # 可信代理
 │       └── cpu_pinning.rs       # CPU 绑定

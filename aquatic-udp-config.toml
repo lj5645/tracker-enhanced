@@ -46,12 +46,6 @@ peer_id_strictness = "off"
 # 命中的 peer_id 会跳过上面的结构校验
 peer_id_allowlist_path = ""
 
-[client_whitelist]
-# UDP 没有 User-Agent，启用时白名单文件必须包含 peer_id 前缀
-# （以 "-" 开头的行，例如 -ut / -tr / -qb），否则启动会报错。
-mode = "off"
-path = "./client-whitelist.txt"
-
 [request_filter]
 # 默认关闭，按需开启
 filter_private_ips = false

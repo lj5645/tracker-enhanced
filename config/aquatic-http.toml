@@ -82,16 +82,6 @@ mode = "off"
 # Path to client ban list file
 path = "config/client-ban-list.txt"
 
-[client_whitelist]
-# Client whitelist mode: on, off
-# When enabled, only clients in the whitelist will be allowed.
-# The client ban list still applies; a whitelist does not override it.
-# Entries not starting with "-" match User-Agent substrings (HTTP/WebSocket).
-# Entries starting with "-" match peer_id prefixes (UDP/WebSocket).
-mode = "off"
-# Path to client whitelist file
-path = "config/client-whitelist.txt"
-
 [request_filter]
 # Filter SQL injection attempts
 filter_sql_injection = true

@@ -10,7 +10,6 @@ use aquatic_common::{
     privileges::PrivilegeConfig,
     ip_ban::IpBanConfig,
     client_ban::ClientBanConfig,
-    client_whitelist::ClientWhitelistConfig,
     request_filter::RequestFilterConfig,
     auto_ban::AutoBanConfig,
 };
@@ -51,14 +50,6 @@ pub struct Config {
     /// Block specific BitTorrent clients by peer_id pattern.
     /// The file is read on start and when the program receives `SIGUSR2`.
     pub client_ban: ClientBanConfig,
-    /// Client whitelist configuration
-    ///
-    /// Only allow specific BitTorrent clients. UDP has no User-Agent, so the
-    /// whitelist file must contain at least one peer_id prefix (a line
-    /// starting with `-`). When enabled, clients not in the whitelist will be
-    /// blocked. The file is read on start and when the program receives
-    /// `SIGUSR2`.
-    pub client_whitelist: ClientWhitelistConfig,
     /// Request filter configuration
     ///
     /// Filter private IP addresses from being used as peer addresses.
@@ -67,7 +58,7 @@ pub struct Config {
     ///
     /// Automatically ban IPs that exceed a threshold of illegal requests
     /// within a time window. Illegal requests include: IP already banned,
-    /// banned client, not whitelisted client, or private IP.
+    /// banned client, non-standard peer id, or private IP.
     pub auto_ban: AutoBanConfig,
 }
 
@@ -84,7 +75,6 @@ impl Default for Config {
             access_list: AccessListConfig::default(),
             ip_ban: IpBanConfig::default(),
             client_ban: ClientBanConfig::default(),
-            client_whitelist: ClientWhitelistConfig::default(),
             request_filter: RequestFilterConfig::default(),
             auto_ban: AutoBanConfig::default(),
         }

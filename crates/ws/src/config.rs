@@ -6,7 +6,6 @@ use aquatic_common::{
     privileges::PrivilegeConfig,
     ip_ban::IpBanConfig,
     client_ban::ClientBanConfig,
-    client_whitelist::ClientWhitelistConfig,
     request_filter::RequestFilterConfig,
     trusted_proxies::TrustedProxiesConfig,
     auto_ban::AutoBanConfig,
@@ -63,13 +62,6 @@ pub struct Config {
     /// Block specific BitTorrent clients by peer_id pattern.
     /// The file is read on start and when the program receives `SIGUSR2`.
     pub client_ban: ClientBanConfig,
-    /// Client whitelist configuration
-    ///
-    /// Only allow specific BitTorrent clients. Entries not starting with `-`
-    /// match User-Agent substrings; entries starting with `-` match peer_id
-    /// prefixes. When enabled, clients not in the whitelist will be blocked.
-    /// The file is read on start and when the program receives `SIGUSR2`.
-    pub client_whitelist: ClientWhitelistConfig,
     /// Request filter configuration
     ///
     /// Filter malicious requests and private IP addresses.
@@ -100,7 +92,6 @@ impl Default for Config {
             access_list: AccessListConfig::default(),
             ip_ban: IpBanConfig::default(),
             client_ban: ClientBanConfig::default(),
-            client_whitelist: ClientWhitelistConfig::default(),
             request_filter: RequestFilterConfig::default(),
             trusted_proxies: TrustedProxiesConfig::default(),
             auto_ban: AutoBanConfig::default(),

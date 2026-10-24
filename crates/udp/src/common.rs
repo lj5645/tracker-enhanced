@@ -5,7 +5,6 @@ use std::sync::Arc;
 use aquatic_common::access_list::AccessListArcSwap;
 use aquatic_common::ip_ban::IpBanListArcSwap;
 use aquatic_common::client_ban::ClientBanListArcSwap;
-use aquatic_common::client_whitelist::ClientWhitelistArcSwap;
 use aquatic_common::auto_ban::AutoBanTracker;
 use aquatic_common::ServerStartInstant;
 use aquatic_udp_protocol::*;
@@ -96,7 +95,6 @@ pub struct State {
     pub access_list: Arc<AccessListArcSwap>,
     pub ip_ban_list: Arc<IpBanListArcSwap>,
     pub client_ban_list: Arc<ClientBanListArcSwap>,
-    pub client_whitelist: Arc<ClientWhitelistArcSwap>,
     pub auto_ban_tracker: Option<Arc<AutoBanTracker>>,
     pub torrent_maps: TorrentMaps,
     pub server_start_instant: ServerStartInstant,
@@ -108,7 +106,6 @@ impl Default for State {
             access_list: Arc::new(AccessListArcSwap::default()),
             ip_ban_list: Arc::new(IpBanListArcSwap::default()),
             client_ban_list: Arc::new(ClientBanListArcSwap::default()),
-            client_whitelist: Arc::new(ClientWhitelistArcSwap::default()),
             auto_ban_tracker: None,
             torrent_maps: TorrentMaps::default(),
             server_start_instant: ServerStartInstant::new(),

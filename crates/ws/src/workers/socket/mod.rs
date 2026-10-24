@@ -67,7 +67,6 @@ pub async fn run_socket_worker(
     let access_list = state.access_list;
     let ip_ban_list = state.ip_ban_list;
     let client_ban_list = state.client_ban_list;
-    let client_whitelist = state.client_whitelist;
     let trusted_proxies = state.trusted_proxies;
     let auto_ban_tracker = state.auto_ban_tracker;
 
@@ -202,7 +201,6 @@ pub async fn run_socket_worker(
                         access_list,
                         ip_ban_list,
                         client_ban_list,
-                        client_whitelist,
                         trusted_proxies,
                         auto_ban_tracker,
                         in_message_senders,
@@ -216,7 +214,6 @@ pub async fn run_socket_worker(
                             access_list,
                             ip_ban_list,
                             client_ban_list,
-                            client_whitelist,
                             trusted_proxies,
                             auto_ban_tracker,
                             in_message_senders,

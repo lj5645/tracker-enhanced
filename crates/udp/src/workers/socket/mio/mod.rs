@@ -8,7 +8,6 @@ use aquatic_common::ip_ban::{IpBanListCache, create_ip_ban_list_cache};
 use aquatic_common::client_ban::{
     create_client_ban_list_cache, ClientBanListCache, IdentityCheck,
 };
-use aquatic_common::client_whitelist::{ClientWhitelistCache, create_client_whitelist_cache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanReason};
 use crossbeam_channel::Sender;
@@ -74,7 +73,6 @@ pub fn run(
     let access_list_cache = create_access_list_cache(&shared_state.access_list);
     let ip_ban_list_cache = create_ip_ban_list_cache(&shared_state.ip_ban_list);
     let client_ban_list_cache = create_client_ban_list_cache(&shared_state.client_ban_list);
-    let client_whitelist_cache = create_client_whitelist_cache(&shared_state.client_whitelist);
     let request_filter = RequestFilter::new();
     let peer_valid_until = ValidUntil::new(
         shared_state.server_start_instant,
@@ -89,7 +87,6 @@ pub fn run(
         access_list_cache,
         ip_ban_list_cache,
         client_ban_list_cache,
-        client_whitelist_cache,
         request_filter,
         validator,
         buffer: [0; BUFFER_SIZE],
@@ -164,7 +161,6 @@ pub struct WorkerSharedData {
     access_list_cache: AccessListCache,
     ip_ban_list_cache: IpBanListCache,
     client_ban_list_cache: ClientBanListCache,
-    client_whitelist_cache: ClientWhitelistCache,
     request_filter: RequestFilter,
     validator: ConnectionValidator,
     buffer: [u8; BUFFER_SIZE],
@@ -231,10 +227,9 @@ impl WorkerSharedData {
         }
 
         let check_client_ban = self.config.client_ban.mode.is_on();
-        let check_whitelist = self.config.client_whitelist.mode.is_on();
         let check_peer_id = !self.config.client_ban.peer_id_strictness.is_off();
 
-        if !check_client_ban && !check_whitelist && !check_peer_id {
+        if !check_client_ban && !check_peer_id {
             return false;
         }
 
@@ -279,20 +274,6 @@ impl WorkerSharedData {
                     return true;
                 }
             }
-        }
-
-        // Client whitelist check
-        if check_whitelist
-            && !self
-                .client_whitelist_cache
-                .load()
-                .allows(Some(&peer_id_str), None)
-        {
-            ::log::debug!("Client not whitelisted: {}", peer_id_str);
-            if let Some(tracker) = &self.shared_state.auto_ban_tracker {
-                tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
-            }
-            return true;
         }
 
         // All checks passed

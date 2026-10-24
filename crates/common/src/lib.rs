@@ -10,7 +10,6 @@ pub mod cli;
 pub mod cpu_pinning;
 pub mod ip_ban;
 pub mod client_ban;
-pub mod client_whitelist;
 pub mod list_file;
 pub mod request_filter;
 pub mod privileges;

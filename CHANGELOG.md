@@ -1,5 +1,14 @@
 # 更新日志
 
+## v1.5.4
+
+### 变更
+
+- **移除客户端白名单**：`[client_whitelist]` 配置段、`client-whitelist.txt` 文件以及 UDP/HTTP/WebSocket 三条链路上的白名单检查已全部删除。IP 封禁、客户端封禁、请求过滤、自动封禁和身份检测不受影响，访问控制变为纯黑名单模型
+- **配置不兼容**：配置文件里残留的 `[client_whitelist]` 段会导致启动失败（`unknown field 'client_whitelist'`），升级时请删除该段及对应文件
+- `peer_id_allowlist_path`（身份检测豁免）保留，与已移除的访问白名单是两个不同机制
+- 自动封禁的违规来源少一项（不再有 `not_whitelisted`）
+
 ## v1.5.3
 
 ### 修复

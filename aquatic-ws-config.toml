@@ -50,11 +50,6 @@ peer_id_user_agent_mismatch = "off"
 # 命中的 peer_id 会同时跳过上面的结构校验与 User-Agent 一致性检查
 peer_id_allowlist_path = ""
 
-[client_whitelist]
-# 支持 User-Agent 子串和以 "-" 开头的 peer_id 前缀
-mode = "off"
-path = "./client-whitelist.txt"
-
 [request_filter]
 filter_sql_injection = false
 filter_path_traversal = false

@@ -10,7 +10,6 @@ use aquatic_common::ip_ban::{create_ip_ban_list_cache, IpBanListCache};
 use aquatic_common::client_ban::{
     create_client_ban_list_cache, ClientBanListCache, IdentityCheck,
 };
-use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::trusted_proxies::TrustedProxiesArcSwap;
@@ -141,7 +140,6 @@ pub(super) async fn run_connection(
     let access_list_cache = create_access_list_cache(&state.access_list);
     let ip_ban_list_cache = create_ip_ban_list_cache(&state.ip_ban_list);
     let client_ban_list_cache = create_client_ban_list_cache(&state.client_ban_list);
-    let client_whitelist_cache = create_client_whitelist_cache(&state.client_whitelist);
     let request_filter = RequestFilter::new();
     let request_buffer = Box::new([0u8; REQUEST_BUFFER_SIZE]);
 
@@ -195,7 +193,6 @@ pub(super) async fn run_connection(
             access_list_cache,
             ip_ban_list_cache,
             client_ban_list_cache,
-            client_whitelist_cache,
             request_filter,
             request_senders,
             valid_until,
@@ -217,7 +214,6 @@ pub(super) async fn run_connection(
             access_list_cache,
             ip_ban_list_cache,
             client_ban_list_cache,
-            client_whitelist_cache,
             request_filter,
             request_senders,
             valid_until,
@@ -241,7 +237,6 @@ struct Connection<S> {
     access_list_cache: AccessListCache,
     ip_ban_list_cache: IpBanListCache,
     client_ban_list_cache: ClientBanListCache,
-    client_whitelist_cache: ClientWhitelistCache,
     request_filter: RequestFilter,
     request_senders: Rc<Senders<ChannelRequest>>,
     valid_until: Rc<RefCell<ValidUntil>>,
@@ -267,7 +262,6 @@ where
         access_list_cache: AccessListCache,
         ip_ban_list_cache: IpBanListCache,
         client_ban_list_cache: ClientBanListCache,
-        client_whitelist_cache: ClientWhitelistCache,
         request_filter: RequestFilter,
         request_senders: Rc<Senders<ChannelRequest>>,
         valid_until: Rc<RefCell<ValidUntil>>,
@@ -286,7 +280,6 @@ where
             access_list_cache,
             ip_ban_list_cache,
             client_ban_list_cache,
-            client_whitelist_cache,
             request_filter,
             request_senders,
             valid_until,
@@ -450,8 +443,6 @@ where
 
         // 3. Client ban check (for announce requests)
         //
-        // Checked before the whitelist so that an explicitly banned client is
-        // reported as banned even if it would also fail the whitelist.
         if self.config.client_ban.mode.is_on() {
             if let Some(peer_id) = opt_peer_id.as_deref() {
                 if self.client_ban_list_cache.load().is_banned(peer_id) {
@@ -525,26 +516,6 @@ where
                     }
                 }
             }
-        }
-
-        // 5. Client whitelist check
-        if self.config.client_whitelist.mode.is_on()
-            && !self
-                .client_whitelist_cache
-                .load()
-                .allows(opt_peer_id.as_deref(), opt_user_agent.as_deref())
-        {
-            ::log::debug!(
-                "Client not whitelisted (peer_id: {:?}, user agent: {:?})",
-                opt_peer_id,
-                opt_user_agent
-            );
-            if let Some(tracker) = &self.auto_ban_tracker {
-                tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
-            }
-            return Ok(Some(Response::Failure(FailureResponse {
-                failure_reason: "Client not allowed".into(),
-            })));
         }
 
         Ok(None)

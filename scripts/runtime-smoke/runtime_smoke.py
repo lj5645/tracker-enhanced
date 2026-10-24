@@ -29,9 +29,8 @@ from pathlib import Path
 
 INFO_HASH = bytes(range(20))
 INFO_HASH_STR = "0123456789abcdefghij"  # 20 ASCII characters for WS JSON
-PEER_ALLOWED = b"-QB1234-abcdefghijkl"     # 20 bytes, whitelisted via -qb
+PEER_ALLOWED = b"-QB1234-abcdefghijkl"     # 20 bytes, ordinary qBittorrent id
 PEER_BANNED = b"-BT1234-abcdefghijkl"      # 20 bytes, banned via -bt
-PEER_OTHER = b"-XX1234-abcdefghijkl"       # 20 bytes, not whitelisted
 PEER_UTORRENT = b"-UT3550-abcdefghijkl"    # real uTorrent 3.5.5 id
 PEER_FAKE_VERSION = b"-UT9999-abcdefghijkl"  # impossible uTorrent version
 PEER_TRANSMISSION = b"-TR4050-abcdefghijkl"  # real Transmission 4.x id
@@ -166,11 +165,10 @@ class Server:
             return "(no log)"
 
 
-def list_files(directory, ip_ban="", client_ban="-bt\n", whitelist="",
+def list_files(directory, ip_ban="", client_ban="-bt\n",
                peer_id_allowlist=""):
     write(directory / "ip-ban-list.txt", ip_ban or "# empty\n")
     write(directory / "client-ban-list.txt", client_ban or "# empty\n")
-    write(directory / "client-whitelist.txt", whitelist or "# empty\n")
     write(directory / "peer-id-allowlist.txt", peer_id_allowlist or "# empty\n")
     write(directory / "access-list.txt", "# empty\n")
 
@@ -181,7 +179,7 @@ def shipped_client_ban_list():
 
 
 def udp_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
-               whitelist_on=False, private_filter=False, auto_ban=False,
+               private_filter=False, auto_ban=False,
                ipv6_only=False, metrics_port=None, peer_id_strictness=None,
                peer_id_allowlist=False):
     metrics = ""
@@ -241,9 +239,6 @@ path = "client-ban-list.txt"
 peer_id_strictness = "{peer_id_strictness or 'off'}"
 peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
-[client_whitelist]
-mode = "{'on' if whitelist_on else 'off'}"
-path = "client-whitelist.txt"
 
 [request_filter]
 filter_sql_injection = false
@@ -263,7 +258,7 @@ flush_interval_secs = 1
 
 
 def http_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
-                whitelist_on=False, filters=None, private_filter=False,
+                filters=None, private_filter=False,
                 auto_ban=False, proxy=False, trusted_proxy="",
                 dualstack=False, metrics_port=None, peer_id_strictness=None,
                 peer_id_ua_mismatch=None, peer_id_allowlist=False):
@@ -337,9 +332,6 @@ peer_id_strictness = "{peer_id_strictness or 'off'}"
 peer_id_user_agent_mismatch = "{peer_id_ua_mismatch or 'off'}"
 peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
-[client_whitelist]
-mode = "{'on' if whitelist_on else 'off'}"
-path = "client-whitelist.txt"
 
 [request_filter]
 filter_sql_injection = {str(filters.get('sql', False)).lower()}
@@ -360,7 +352,7 @@ flush_interval_secs = 1
 
 
 def ws_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
-              whitelist_on=False, filters=None, private_filter=False,
+              filters=None, private_filter=False,
               auto_ban=False, trusted_proxy="", address=None,
               only_ipv6=False, metrics_port=None, peer_id_strictness=None,
               peer_id_ua_mismatch=None, peer_id_allowlist=False):
@@ -427,9 +419,6 @@ peer_id_strictness = "{peer_id_strictness or 'off'}"
 peer_id_user_agent_mismatch = "{peer_id_ua_mismatch or 'off'}"
 peer_id_allowlist_path = "{'peer-id-allowlist.txt' if peer_id_allowlist else ''}"
 
-[client_whitelist]
-mode = "{'on' if whitelist_on else 'off'}"
-path = "client-whitelist.txt"
 
 [request_filter]
 filter_sql_injection = {str(filters.get('sql', False)).lower()}
@@ -517,17 +506,6 @@ def udp_basic(port):
         check(c.announce(cid, PEER_ALLOWED) is not None, "udp basic: allowed announce")
         check(c.announce(cid, PEER_BANNED) is None, "udp basic: banned client dropped")
         check(c.scrape(cid) is not None, "udp basic: scrape")
-    finally:
-        c.close()
-
-
-def udp_whitelist(port):
-    c = UdpClient(port)
-    try:
-        cid = c.connect()
-        check(cid is not None, "udp whitelist: connect")
-        check(c.announce(cid, PEER_ALLOWED) is not None, "udp whitelist: allowed peer")
-        check(c.announce(cid, PEER_OTHER) is None, "udp whitelist: other peer dropped")
     finally:
         c.close()
 
@@ -701,11 +679,6 @@ def http_basic(port):
     http_blocked(port, announce_target(PEER_BANNED), "Client banned", "http basic banned client")
     body = http_response_body(port, scrape_target())
     check(b"5:files" in body, "http basic: scrape")
-
-
-def http_whitelist(port):
-    http_allowed(port, announce_target(PEER_ALLOWED), "http whitelist allowed")
-    http_blocked(port, announce_target(PEER_OTHER), "Client not allowed", "http whitelist blocked")
 
 
 def http_filters(port):
@@ -893,11 +866,6 @@ def ws_basic(port):
         check(response.get("failure reason") == "Access denied", "ws basic: banned client blocked")
 
 
-def ws_whitelist(port):
-    ws_allowed(port, PEER_ALLOWED, "ws whitelist: allowed peer")
-    ws_blocked(port, PEER_OTHER, "ws whitelist: other peer")
-
-
 def ws_ipban(port):
     ws_blocked_anywhere(port, PEER_ALLOWED, "ws ipban")
 
@@ -1080,10 +1048,6 @@ def build_scenarios():
         scenario("udp_basic", "udp", 18100,
                  lambda d, p: (list_files(d), udp_config(d, p)),
                  lambda s, d: udp_basic(s.port)),
-        scenario("udp_whitelist", "udp", 18101,
-                 lambda d, p: (list_files(d, whitelist="-qb\n"),
-                               udp_config(d, p, whitelist_on=True)),
-                 lambda s, d: udp_whitelist(s.port)),
         scenario("udp_autoban", "udp", 18102,
                  lambda d, p: (list_files(d), udp_config(d, p, auto_ban=True)),
                  lambda s, d: udp_autoban(s.port, d)),
@@ -1132,10 +1096,6 @@ def build_scenarios():
                  lambda d, p: (list_files(d), http_config(d, p, metrics_port=18410)),
                  lambda s, d: (http_basic(s.port), get_metrics(18410)),
                  metrics_port=18410),
-        scenario("http_whitelist", "http", 18201,
-                 lambda d, p: (list_files(d, whitelist="-qb\n"),
-                               http_config(d, p, whitelist_on=True)),
-                 lambda s, d: http_whitelist(s.port)),
         scenario("http_filters", "http", 18202,
                  lambda d, p: (list_files(d),
                                http_config(d, p, filters={
@@ -1199,10 +1159,6 @@ def build_scenarios():
                  lambda d, p: (list_files(d), ws_config(d, p, metrics_port=18420)),
                  lambda s, d: (ws_basic(s.port), get_metrics(18420)),
                  metrics_port=18420),
-        scenario("ws_whitelist", "ws", 18301,
-                 lambda d, p: (list_files(d, whitelist="-qb\n"),
-                               ws_config(d, p, whitelist_on=True)),
-                 lambda s, d: ws_whitelist(s.port)),
         scenario("ws_ipban", "ws", 18302,
                  lambda d, p: (list_files(d, ip_ban="127.0.0.1/32\n"),
                                ws_config(d, p)),
