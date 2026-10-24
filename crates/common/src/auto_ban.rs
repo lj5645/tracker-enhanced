@@ -24,7 +24,7 @@ pub struct AutoBanConfig {
     pub threshold: u32,
     /// Time window in seconds for counting violations
     pub window_secs: u64,
-    /// Ban duration in seconds. Use 0 for permanent ban.
+    /// Ban duration in seconds. Use 0 for permanent ban (the default).
     ///
     /// Permanent bans (`0`) are appended to `ban_list_path` immediately, so
     /// they survive a restart. `ban_list_path` must be non-empty and equal to
@@ -52,7 +52,10 @@ impl Default for AutoBanConfig {
             enabled: false,
             threshold: 10,
             window_secs: 60,
-            ban_duration_secs: 3600,
+            // Default to permanent bans: a temporary ban is memory-only, so
+            // enabling auto_ban without specifying a duration would silently
+            // stop protecting the server after a restart.
+            ban_duration_secs: 0,
             ban_list_path: PathBuf::from("./ip-ban-list.txt"),
             flush_interval_secs: 60,
         }
@@ -998,6 +1001,15 @@ mod tests {
         assert_eq!(contents.matches("10.20.30.40").count(), 1);
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_default_config_uses_permanent_bans() {
+        // Enabling auto_ban without specifying a duration must not fall back to
+        // memory-only temporary bans: those disappear on restart.
+        let auto = AutoBanConfig::default();
+        assert_eq!(auto.ban_duration_secs, 0);
+        assert!(auto.ban_list_path.to_string_lossy().contains("ip-ban-list"));
     }
 
     #[test]
