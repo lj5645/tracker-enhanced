@@ -1,5 +1,5 @@
 # aquatic_udp 配置文件
-# 用法: ./aquatic_udp-linux-x86_64 -c aquatic-udp-config.toml
+# 用法: ./aquatic-linux-x86_64 udp -c aquatic-udp-config.toml
 
 # 0 = 自动使用可用 CPU 核心数
 socket_workers = 0

@@ -13,9 +13,30 @@ rust-version.workspace = true
 [[bin]]
 name = "aquatic"
 
+[features]
+# Every protocol is opt-in so a platform only compiles what it supports:
+# the HTTP and WebSocket trackers are built on glommio/io_uring and therefore
+# cannot be compiled for Windows.
+default = ["udp"]
+udp = ["dep:aquatic_udp"]
+http = ["dep:aquatic_http"]
+ws = ["dep:aquatic_ws"]
+prometheus = [
+    "aquatic_udp?/prometheus",
+    "aquatic_http?/prometheus",
+    "aquatic_ws?/prometheus",
+]
+mimalloc = [
+    "dep:mimalloc",
+    "aquatic_udp?/mimalloc",
+    "aquatic_http?/mimalloc",
+    "aquatic_ws?/mimalloc",
+]
+cpu-pinning = ["aquatic_http?/cpu-pinning"]
+
 [dependencies]
 aquatic_common.workspace = true
-aquatic_http.workspace = true
-aquatic_udp.workspace = true
-aquatic_ws.workspace = true
-mimalloc = { version = "0.1", default-features = false }
+aquatic_http = { workspace = true, optional = true, default-features = false }
+aquatic_udp = { workspace = true, optional = true, default-features = false }
+aquatic_ws = { workspace = true, optional = true, default-features = false }
+mimalloc = { version = "0.1", default-features = false, optional = true }

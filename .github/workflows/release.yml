@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., v1.0.0)'
+        description: 'Release version (e.g., v1.5.0)'
         required: true
         type: string
       prerelease:
@@ -12,6 +12,21 @@ on:
         required: false
         type: boolean
         default: false
+      build_udp:
+        description: 'Linux: include UDP tracker（Windows 始终包含 UDP）'
+        required: false
+        type: boolean
+        default: true
+      build_http:
+        description: 'Linux: include HTTP tracker（仅 Linux 支持）'
+        required: false
+        type: boolean
+        default: true
+      build_ws:
+        description: 'Linux: include WebSocket tracker（仅 Linux 支持）'
+        required: false
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,44 +40,56 @@ jobs:
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
-      
+
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
-    
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential libhwloc-dev
-    
-    - name: Build aquatic_udp
-      run: |
-        cargo build --release -p aquatic_udp
-        strip target/release/aquatic_udp
-        mv target/release/aquatic_udp target/release/aquatic_udp-linux-x86_64
-    
-    - name: Build aquatic_http
-      run: |
-        cargo build --release -p aquatic_http --features cpu-pinning
-        strip target/release/aquatic_http
-        mv target/release/aquatic_http target/release/aquatic_http-linux-x86_64
 
-    - name: Build aquatic_ws
+    - name: Select protocols
+      id: protocols
       run: |
-        cargo build --release -p aquatic_ws
-        strip target/release/aquatic_ws
-        mv target/release/aquatic_ws target/release/aquatic_ws-linux-x86_64
+        features=""
+        if [ "${{ inputs.build_udp }}" = "true" ]; then
+          features="udp"
+        fi
+        if [ "${{ inputs.build_http }}" = "true" ]; then
+          features="${features:+$features,}http"
+        fi
+        if [ "${{ inputs.build_ws }}" = "true" ]; then
+          features="${features:+$features,}ws"
+        fi
+        if [ -z "$features" ]; then
+          echo "至少需要启用一个协议（build_udp / build_http / build_ws）" >&2
+          exit 1
+        fi
+
+        features="$features,prometheus,mimalloc"
+        if [ "${{ inputs.build_http }}" = "true" ]; then
+          features="$features,cpu-pinning"
+        fi
+
+        echo "features=$features" >> "$GITHUB_OUTPUT"
+        echo "Building with features: $features"
+
+    - name: Build aquatic (Linux)
+      run: |
+        cargo build --release -p aquatic --no-default-features \
+          --features "${{ steps.protocols.outputs.features }}"
+        strip target/release/aquatic
+        mv target/release/aquatic target/release/aquatic-linux-x86_64
 
     - name: Upload Linux artifacts
       uses: actions/upload-artifact@v4
       with:
         name: linux-binaries
-        path: |
-          target/release/aquatic_udp-linux-x86_64
-          target/release/aquatic_http-linux-x86_64
-          target/release/aquatic_ws-linux-x86_64
+        path: target/release/aquatic-linux-x86_64
         retention-days: 1
 
   build-windows:
@@ -70,26 +97,26 @@ jobs:
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
-      
+
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
-    
-    - name: Install cmake
-      run: choco install cmake -y
-    
-    - name: Build aquatic_udp
+
+    - name: Build aquatic (Windows, UDP only)
+      # The HTTP and WebSocket trackers depend on glommio/io_uring and cannot
+      # be compiled on Windows, so only the protocols Windows supports are
+      # built into the binary.
       run: |
-        cargo build --release -p aquatic_udp --no-default-features
-        mv target/release/aquatic_udp.exe target/release/aquatic_udp-windows-x86_64.exe
-    
+        cargo build --release -p aquatic --no-default-features --features udp
+        mv target/release/aquatic.exe target/release/aquatic-windows-x86_64.exe
+
     - name: Upload Windows artifacts
       uses: actions/upload-artifact@v4
       with:
         name: windows-binaries
-        path: target/release/aquatic_udp-windows-x86_64.exe
+        path: target/release/aquatic-windows-x86_64.exe
         retention-days: 1
 
   create-release:
@@ -99,35 +126,24 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
-    
     - name: Download Linux artifacts
       uses: actions/download-artifact@v4
       with:
         name: linux-binaries
         path: artifacts/linux-binaries
-    
+
     - name: Download Windows artifacts
       if: needs.build-windows.result == 'success'
       uses: actions/download-artifact@v4
       with:
         name: windows-binaries
         path: artifacts/windows-binaries
-    
-    - name: Prepare configuration examples
-      run: |
-        mkdir -p artifacts/config
-        cp aquatic-http-config.toml aquatic-udp-config.toml aquatic-ws-config.toml artifacts/config/
-        cp access-list.txt client-ban-list.txt client-whitelist.txt ip-ban-list.txt artifacts/config/
-
-    - name: Display structure of downloaded files
-      run: ls -R artifacts
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ github.event.inputs.version }}
-        name: Aquatic Tracker 增强版 ${{ github.event.inputs.version }}
+        tag_name: ${{ inputs.version }}
+        name: Aquatic Tracker 增强版 ${{ inputs.version }}
         body: |
           ## Aquatic BitTorrent Tracker 增强版
 
@@ -146,23 +162,25 @@ jobs:
           - Prometheus 指标导出
 
           ### 下载文件
-          | 平台 | 文件 |
-          |------|------|
-          | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64, aquatic_ws-linux-x86_64 |
-          | Windows x86_64 | aquatic_udp-windows-x86_64.exe（如可用） |
-          | 配置示例 | artifacts/config/ 下三个 TOML 与封禁/白名单列表 |
+          | 平台 | 文件 | 包含协议 |
+          |------|------|----------|
+          | Linux x86_64 | `aquatic-linux-x86_64` | ${{ inputs.build_udp == true && 'UDP' || '' }}${{ inputs.build_http == true && ' / HTTP' || '' }}${{ inputs.build_ws == true && ' / WebSocket' || '' }} |
+          | Windows x86_64 | `aquatic-windows-x86_64.exe` | UDP（Windows 不支持 HTTP/WebSocket） |
 
           ### 使用方法
           ```bash
           # Linux
-          chmod +x aquatic_*
-          ./aquatic_http-linux-x86_64 -c aquatic-http-config.toml
-          ./aquatic_udp-linux-x86_64 -c aquatic-udp-config.toml
-          ./aquatic_ws-linux-x86_64 -c aquatic-ws-config.toml
+          chmod +x aquatic-linux-x86_64
+          ./aquatic-linux-x86_64 udp -c aquatic-udp-config.toml
+          ./aquatic-linux-x86_64 http -c aquatic-http-config.toml
+          ./aquatic-linux-x86_64 ws -c aquatic-ws-config.toml
 
-          # Windows（仅 aquatic_udp 可用）
-          .\aquatic_udp-windows-x86_64.exe -c aquatic-udp-config.toml
+          # Windows（仅 UDP）
+          .\aquatic-windows-x86_64.exe udp -c aquatic-udp-config.toml
           ```
+
+          运行 `./aquatic-linux-x86_64 --help` 可查看当前二进制实际包含的协议。
+          示例配置（TOML）与封禁/白名单列表示例请从仓库根目录获取，Release 仅提供编译产物。
 
           ### 运行时依赖
           - HTTP Tracker 需要 Linux 5.8+（依赖 glommio/io_uring）
@@ -177,11 +195,10 @@ jobs:
           sudo sysctl -w net.core.wmem_max=8388608
           ```
         draft: false
-        prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+        prerelease: ${{ inputs.prerelease == true }}
         fail_on_unmatched_files: false
         files: |
           artifacts/linux-binaries/*
           artifacts/windows-binaries/*
-          artifacts/config/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

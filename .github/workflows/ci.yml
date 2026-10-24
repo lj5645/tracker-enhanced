@@ -31,6 +31,25 @@ jobs:
         cargo build --verbose -p aquatic_http --features metrics
         cargo build --verbose -p aquatic_ws --features metrics
         cargo build --verbose -p aquatic_http --features "metrics,cpu-pinning"
+    - name: Build combined binary (all protocols)
+      run: |
+        cargo build --verbose -p aquatic --no-default-features \
+          --features "udp,http,ws,prometheus,mimalloc,cpu-pinning"
+
+  build-windows:
+    # Windows cannot compile the glommio/io_uring based HTTP and WebSocket
+    # trackers: verify that the combined binary builds with UDP only, which is
+    # exactly what the release workflow ships for Windows.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install latest stable Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Rust dependency caching
+      uses: Swatinem/rust-cache@v2
+    - name: Build (UDP only)
+      run: cargo build --verbose -p aquatic --no-default-features --features udp
 
   build-macos:
     runs-on: macos-latest

@@ -49,26 +49,30 @@ sudo apt-get install -y libhwloc15
 
 ### 3. 配置
 
+Release 只提供编译产物，不附带配置文件。示例配置在仓库根目录：
+
 ```bash
-# 编辑配置文件（Release 资产中已附带三个示例）
-vim aquatic-http-config.toml
+# 根据所用协议复制并修改示例配置
+cp aquatic-http-config.toml aquatic-udp-config.toml aquatic-ws-config.toml /etc/aquatic/
+vim /etc/aquatic/aquatic-http-config.toml
 ```
 
 ### 4. 运行
 
+UDP、HTTP、WebSocket 编译在同一个二进制中，第一个参数选择协议：
+
 ```bash
-# HTTP Tracker（仅 Linux）
-chmod +x aquatic_http-linux-x86_64
-./aquatic_http-linux-x86_64 -c aquatic-http-config.toml
+# Linux
+chmod +x aquatic-linux-x86_64
+./aquatic-linux-x86_64 udp  -c aquatic-udp-config.toml
+./aquatic-linux-x86_64 http -c aquatic-http-config.toml   # 仅当构建时包含 HTTP
+./aquatic-linux-x86_64 ws   -c aquatic-ws-config.toml     # 仅当构建时包含 WebSocket
 
-# UDP Tracker（Linux / Windows）
-chmod +x aquatic_udp-linux-x86_64
-./aquatic_udp-linux-x86_64 -c aquatic-udp-config.toml
-
-# WebTorrent / WebSocket Tracker（仅 Linux）
-chmod +x aquatic_ws-linux-x86_64
-./aquatic_ws-linux-x86_64 -c aquatic-ws-config.toml
+# Windows（仅 UDP）
+.\aquatic-windows-x86_64.exe udp -c aquatic-udp-config.toml
 ```
+
+运行 `./aquatic-linux-x86_64 --help` 可查看当前二进制实际包含的协议。
 
 ### 5. 系统优化（推荐）
 
@@ -285,7 +289,7 @@ core_offset = 0
 
 ```bash
 # 重载封禁和白名单列表
-kill -SIGUSR2 $(pgrep aquatic_http)
+kill -SIGUSR2 $(pgrep -f "aquatic.*http")
 ```
 
 ## 监控

@@ -1,6 +1,6 @@
 # 更新日志
 
-## 未发布
+## v1.5.0
 
 ### 修复
 
@@ -28,6 +28,9 @@
 - 示例配置默认更保守：自动封禁默认关闭并注明风险，`filter_crawlers` / `filter_missing_user_agent` 默认关闭，Prometheus 端点默认只监听 `127.0.0.1`；补充 `[trusted_proxies]`、`[privileges]`、`ban_vampire_clients` 和 WS `max_connections_per_worker`
 - `scripts/optimize.sh`：非交互运行时不再阻塞等待输入；不再删除管理员已有的 `nofile` 配置；去掉会干扰其他服务的 `tcp_tw_reuse`、`tcp_fin_timeout`、`ip_local_port_range`；systemd 单元改为调用独立脚本（不再生成非法的多行 `ExecStart`）；`rc.local` 只在标记块内追加并保留原内容
 - Runtime Smoke：启动前检查端口占用，UDP 就绪检测改为确认端口已绑定，启动失败时关闭日志句柄；工作流在推送到 `master` 时也会运行
+- 统一二进制 `aquatic`：UDP、HTTP、WebSocket 通过 Cargo feature 编译进同一个可执行文件，运行时以 `aquatic <udp|http|ws> [OPTIONS]` 选择协议；`--help` 只列出当前构建实际包含的协议
+- Release 编译选项：工作流新增 `build_udp` / `build_http` / `build_ws` 开关，控制 Linux 二进制包含哪些协议；Windows 只编译 UDP（HTTP/WebSocket 依赖 glommio/io_uring，Windows 无法编译）
+- Release 仅发布编译产物：不再附带 TOML 配置和 TXT 列表文件，Linux/Windows 各提供一个统一二进制
 
 ### 测试
 
