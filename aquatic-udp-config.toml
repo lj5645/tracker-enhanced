@@ -48,8 +48,11 @@ filter_private_ips = false
 filter_missing_user_agent = false
 
 [auto_ban]
-# 自动封禁默认关闭。启用时如果 ban_duration_secs = 0（永久），
-# ban_list_path 必须与上面 [ip_ban] 的 path 完全一致。
+# 自动封禁默认关闭。
+# 永久封禁（ban_duration_secs = 0）触发时立即写入文件，重启后仍然生效。
+# 此时 ban_list_path 必须与上面 [ip_ban] 的 path 完全一致，且 [ip_ban] mode = "on"，
+# 否则服务拒绝启动（否则文件不会被加载，重启后封禁失效）。
+# 临时封禁（ban_duration_secs > 0）仅保存在内存中，重启后丢失。
 enabled = false
 threshold = 10
 window_secs = 60

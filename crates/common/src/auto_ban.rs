@@ -2,8 +2,8 @@ use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
-use std::time::Instant;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use aquatic_toml_config::TomlConfig;
 use hashbrown::HashMap;
@@ -26,17 +26,22 @@ pub struct AutoBanConfig {
     pub window_secs: u64,
     /// Ban duration in seconds. Use 0 for permanent ban.
     ///
+    /// Permanent bans (`0`) are appended to `ban_list_path` immediately, so
+    /// they survive a restart. `ban_list_path` must be non-empty and equal to
+    /// `ip_ban.path` with `ip_ban.mode = "on"`, otherwise the server refuses
+    /// to start: a ban that is never reloaded would silently be lost.
+    ///
     /// Note: When ban_duration_secs > 0 (temporary ban), auto-banned IPs are
     /// NOT written to the ban_list_path file because the file format doesn't
     /// support expiration times. Temporary bans are only kept in memory and
-    /// will be lost on restart. Use 0 for permanent bans that persist across restarts.
+    /// will be lost on restart.
     pub ban_duration_secs: u64,
-    /// Path to write auto-banned IPs. When set, auto-banned IPs are batch-written
-    /// to this file periodically (one IP per line), making bans persistent across restarts.
-    /// Set to empty string to disable file persistence.
+    /// Path to write permanently auto-banned IPs (one IP per line). Each ban
+    /// is appended as soon as it happens; failed writes are retried by the
+    /// periodic flush.
     pub ban_list_path: PathBuf,
-    /// Interval in seconds for batch-writing banned IPs to file and reloading ip_ban_list.
-    /// Banned IPs are kept in memory until flushed. After flushing, ip_ban_list takes over.
+    /// Interval in seconds for the periodic flush (retrying failed writes),
+    /// reloading ip_ban_list and removing records that ip_ban_list now covers.
     /// Minimum value is 1.
     pub flush_interval_secs: u64,
 }
@@ -101,6 +106,10 @@ impl IpRecord {
     }
 }
 
+/// Longest accepted temporary ban (10 years). `Instant + Duration` panics on
+/// overflow, so unreasonably large values must be rejected at startup.
+pub const MAX_BAN_DURATION_SECS: u64 = 10 * 365 * 24 * 60 * 60;
+
 /// Whether a list file already ends with a newline.
 ///
 /// Bans are appended with `OpenOptions::append`; without this check a file
@@ -130,10 +139,32 @@ fn file_ends_with_newline(path: &Path) -> bool {
     file.read_exact(&mut byte).is_ok() && byte[0] == b'\n'
 }
 
+/// Append a single IP to a ban list file.
+///
+/// Callers must hold `AutoBanTracker::write_lock`, which serializes appends
+/// from multiple worker threads.
+fn append_ip_line(path: &Path, ip: &IpAddr) -> ::std::io::Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    let mut line = String::with_capacity(48);
+
+    if !file_ends_with_newline(path) {
+        line.push('\n');
+    }
+
+    line.push_str(&ip.to_string());
+    line.push('\n');
+
+    file.write_all(line.as_bytes())
+}
+
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
 pub struct AutoBanTracker {
     inner: RwLock<AutoBanInner>,
     ban_list_path: Option<PathBuf>,
+    /// Serializes appends to the ban list. Multiple socket workers can ban
+    /// different IPs at the same time and `write_all` is not atomic.
+    write_lock: Mutex<()>,
 }
 
 struct AutoBanInner {
@@ -142,6 +173,11 @@ struct AutoBanInner {
     window_secs: u64,
     ban_duration_secs: u64,
     max_records: usize,
+    /// Last time the O(n) capacity cleanup ran, so a full map does not turn
+    /// every violation into an O(n) scan under the global write lock.
+    last_capacity_cleanup: Option<Instant>,
+    /// Last time the "record limit reached" warning was logged.
+    last_overflow_log: Option<Instant>,
 }
 
 impl AutoBanTracker {
@@ -153,119 +189,217 @@ impl AutoBanTracker {
                 window_secs,
                 ban_duration_secs,
                 max_records: 100_000,
+                last_capacity_cleanup: None,
+                last_overflow_log: None,
             }),
             ban_list_path,
+            write_lock: Mutex::new(()),
         }
     }
 
     /// Record a violation for an IP. Returns true if the IP should be auto-banned.
-    /// This is called on the hot path - NO file I/O here.
+    ///
+    /// Permanent bans are written to the ban list file before this returns, so
+    /// a ban cannot be lost to a restart that happens between the ban and the
+    /// next periodic flush. Temporary bans stay memory-only by design.
     pub fn record_violation(&self, ip: &IpAddr, reason: AutoBanReason) -> bool {
-        let mut inner = self.inner.write().unwrap();
-        let now = Instant::now();
+        let (should_ban, is_permanent) = {
+            let mut inner = self.inner.write().unwrap();
+            let now = Instant::now();
 
-        // Check if already banned
-        if let Some(record) = inner.records.get(ip) {
-            if record.is_banned(now) {
-                return false; // Already banned
-            }
-        }
-
-        let threshold = inner.threshold;
-        let window_secs = inner.window_secs;
-        let ban_duration_secs = inner.ban_duration_secs;
-        let max_records = inner.max_records;
-
-        // Cleanup if too many records
-        if inner.records.len() >= max_records {
-            inner.records.retain(|_, record| {
+            // Check if already banned
+            if let Some(record) = inner.records.get(ip) {
                 if record.is_banned(now) {
-                    true
-                } else {
-                    now.duration_since(record.first_violation).as_secs() < window_secs
+                    return false; // Already banned
                 }
-            });
-        }
+            }
 
-        let should_ban = match inner.records.get_mut(ip) {
-            Some(record) => {
-                // Reset if outside window
-                if now.duration_since(record.first_violation).as_secs() >= window_secs {
-                    record.count = 0;
-                    record.first_violation = now;
+            let threshold = inner.threshold;
+            let window_secs = inner.window_secs;
+            let ban_duration_secs = inner.ban_duration_secs;
+            let max_records = inner.max_records;
+
+            // Capacity guard for IPs that are not tracked yet. Records of
+            // currently banned IPs are kept, so a full map could otherwise
+            // rescan every entry on every violation while still growing.
+            // Make room at most once per second and, if the map is still full,
+            // stop tracking new IPs: dropping violations is cheaper than an
+            // unbounded map and an O(n) hot path.
+            if !inner.records.contains_key(ip) && inner.records.len() >= max_records {
+                let cleanup_due = inner
+                    .last_capacity_cleanup
+                    .map_or(true, |last| now.duration_since(last).as_secs() >= 1);
+
+                if cleanup_due {
+                    inner.records.retain(|_, record| {
+                        record.is_banned(now)
+                            || now.duration_since(record.first_violation).as_secs() < window_secs
+                    });
+                    inner.last_capacity_cleanup = Some(now);
                 }
 
-                // Clear expired ban. Resetting the count as well means a single
-                // new violation after the ban expires does not immediately
-                // re-ban the IP.
-                if !record.permanent {
-                    if let Some(banned_until) = record.banned_until {
-                        if now >= banned_until {
-                            record.banned_until = None;
-                            record.persisted = false;
-                            record.count = 0;
-                            record.first_violation = now;
+                if inner.records.len() >= max_records {
+                    let log_due = inner
+                        .last_overflow_log
+                        .map_or(true, |last| now.duration_since(last).as_secs() >= 60);
+
+                    if log_due {
+                        inner.last_overflow_log = Some(now);
+                        ::log::warn!(
+                            "auto-ban: record limit ({} IPs) reached, not tracking {}",
+                            max_records,
+                            ip,
+                        );
+                    }
+
+                    return false;
+                }
+            }
+
+            let (should_ban, is_permanent) = match inner.records.get_mut(ip) {
+                Some(record) => {
+                    // Reset if outside window
+                    if now.duration_since(record.first_violation).as_secs() >= window_secs {
+                        record.count = 0;
+                        record.first_violation = now;
+                    }
+
+                    // Clear expired ban. Resetting the count as well means a single
+                    // new violation after the ban expires does not immediately
+                    // re-ban the IP.
+                    if !record.permanent {
+                        if let Some(banned_until) = record.banned_until {
+                            if now >= banned_until {
+                                record.banned_until = None;
+                                record.persisted = false;
+                                record.count = 0;
+                                record.first_violation = now;
+                            }
                         }
                     }
-                }
 
-                record.count += 1;
+                    record.count += 1;
 
-                if record.count >= threshold && !record.is_banned(now) {
-                    if ban_duration_secs > 0 {
-                        record.banned_until =
-                            Some(now + std::time::Duration::from_secs(ban_duration_secs));
-                        record.permanent = false;
+                    if record.count >= threshold && !record.is_banned(now) {
+                        if ban_duration_secs > 0 {
+                            // `Instant + Duration` panics on overflow; the
+                            // startup validation bounds the value, but fall
+                            // back to a permanent ban instead of panicking
+                            // while holding the write lock.
+                            match now.checked_add(Duration::from_secs(ban_duration_secs)) {
+                                Some(until) => {
+                                    record.banned_until = Some(until);
+                                    record.permanent = false;
+                                }
+                                None => {
+                                    record.banned_until = None;
+                                    record.permanent = true;
+                                }
+                            }
+                        } else {
+                            record.banned_until = None;
+                            record.permanent = true;
+                        }
+                        record.persisted = false;
+                        (true, record.permanent)
                     } else {
-                        record.banned_until = None;
-                        record.permanent = true;
+                        (false, false)
                     }
-                    record.persisted = false;
-                    true
-                } else {
-                    false
                 }
-            }
-            None => {
-                let should = threshold <= 1;
-                let (banned_until, permanent) = if should {
-                    if ban_duration_secs > 0 {
-                        (
-                            Some(now + std::time::Duration::from_secs(ban_duration_secs)),
-                            false,
-                        )
+                None => {
+                    let should = threshold <= 1;
+                    let (banned_until, permanent) = if should {
+                        if ban_duration_secs > 0 {
+                            match now.checked_add(Duration::from_secs(ban_duration_secs)) {
+                                Some(until) => (Some(until), false),
+                                None => (None, true),
+                            }
+                        } else {
+                            (None, true)
+                        }
                     } else {
-                        (None, true)
-                    }
-                } else {
-                    (None, false)
-                };
+                        (None, false)
+                    };
 
-                inner.records.insert(
-                    *ip,
-                    IpRecord {
-                        count: 1,
-                        first_violation: now,
-                        banned_until,
-                        permanent,
-                        persisted: false,
-                    },
+                    inner.records.insert(
+                        *ip,
+                        IpRecord {
+                            count: 1,
+                            first_violation: now,
+                            banned_until,
+                            permanent,
+                            persisted: false,
+                        },
+                    );
+                    (should, permanent)
+                }
+            };
+
+            if should_ban {
+                ::log::warn!(
+                    "Auto-ban IP {} (reason: {}, count: {}/{})",
+                    ip,
+                    reason.as_str(),
+                    inner.records.get(ip).map(|r| r.count).unwrap_or(0),
+                    threshold,
                 );
-                should
             }
+
+            (should_ban, is_permanent)
         };
 
-        if should_ban {
-            ::log::warn!(
-                "Auto-ban IP {} (reason: {}, count: {}/{})",
-                ip,
-                reason.as_str(),
-                inner.records.get(ip).map(|r| r.count).unwrap_or(0),
-                threshold,
-            );
+        if should_ban && is_permanent {
+            self.persist_ip(ip);
         }
 
         should_ban
+    }
+
+    /// Append a permanent ban to the ban list immediately.
+    ///
+    /// The periodic flush still retries failed writes, but waiting for it
+    /// would leave a window in which a restart unbans the IP.
+    fn persist_ip(&self, ip: &IpAddr) {
+        let path = match &self.ban_list_path {
+            Some(path) if !path.as_os_str().is_empty() => path,
+            _ => return,
+        };
+
+        let _write_guard = self.write_lock.lock().unwrap();
+
+        // The periodic flush may have written this ban first while it was
+        // waiting for the lock. Skip the duplicate append; the record is
+        // already persistent.
+        {
+            let inner = self.inner.read().unwrap();
+
+            match inner.records.get(ip) {
+                Some(record) if record.permanent && !record.persisted => {}
+                _ => return,
+            }
+        }
+
+        if let Err(err) = append_ip_line(path, ip) {
+            ::log::error!(
+                "auto-ban: failed to persist {} to {}: {} (periodic flush will retry)",
+                ip,
+                path.display(),
+                err,
+            );
+            return;
+        }
+
+        let mut inner = self.inner.write().unwrap();
+
+        if let Some(record) = inner.records.get_mut(ip) {
+            // Only mark the ban that was actually written. The record may have
+            // been removed or replaced while the file was being written.
+            if record.permanent {
+                record.persisted = true;
+            }
+        }
+
+        ::log::info!("auto-ban: persisted {} to {}", ip, path.display());
     }
 
     /// Check if an IP is currently auto-banned (in-memory check only)
@@ -280,16 +414,16 @@ impl AutoBanTracker {
         false
     }
 
-    /// Flush permanently banned IPs to file and return the list of flushed IPs.
-    /// Only IPs with ban_duration_secs == 0 (permanent bans) are written to file,
-    /// because the file format doesn't support expiration times.
+    /// Flush permanently banned IPs that failed to persist immediately.
+    /// Only IPs with ban_duration_secs == 0 (permanent bans) are written to
+    /// file, because the file format doesn't support expiration times.
     /// Temporary bans are kept in memory only and cleaned up by cleanup().
     /// Records are NOT removed from memory yet - call remove_ips() after
     /// ip_ban_list has been successfully reloaded.
     pub fn flush_to_file(&self) -> Vec<IpAddr> {
         // Only permanent bans are written to file: the list format has no
         // expiration timestamps, so a temporary ban must stay in memory.
-        let (banned, pending_write) = {
+        let (banned, mut pending_write) = {
             let inner = self.inner.read().unwrap();
 
             if inner.ban_duration_secs != 0 {
@@ -325,6 +459,26 @@ impl AutoBanTracker {
         };
 
         if !pending_write.is_empty() {
+            let _write_guard = self.write_lock.lock().unwrap();
+
+            // A ban may have been persisted directly by `persist_ip` after the
+            // snapshot above. Re-check under the write lock so the same IP is
+            // not appended twice.
+            {
+                let inner = self.inner.read().unwrap();
+
+                pending_write.retain(|ip| {
+                    inner
+                        .records
+                        .get(ip)
+                        .map_or(false, |record| !record.persisted)
+                });
+            }
+
+            if pending_write.is_empty() {
+                return banned;
+            }
+
             match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(mut file) => {
                     let mut lines = String::with_capacity(pending_write.len() * 40 + 1);
@@ -455,26 +609,40 @@ pub fn validate_auto_ban_config(
         ));
     }
 
+    if auto.ban_duration_secs > MAX_BAN_DURATION_SECS {
+        return Err(anyhow::anyhow!(
+            "auto_ban.ban_duration_secs must be at most {} seconds (10 years), got {}; \
+             larger values overflow Instant arithmetic",
+            MAX_BAN_DURATION_SECS,
+            auto.ban_duration_secs,
+        ));
+    }
+
     if auto.ban_duration_secs != 0 {
         return Ok(());
     }
 
+    // Permanent bans must come back after a restart. That requires writing
+    // each ban to a file AND loading that file as an IP ban list at startup.
+    // Refuse to start rather than silently keeping the bans only in memory.
     if auto.ban_list_path.as_os_str().is_empty() {
-        ::log::warn!(
-            "auto_ban is enabled with permanent bans but ban_list_path is empty; \
-             bans are kept in memory only and are lost on restart"
-        );
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "auto_ban is enabled with permanent bans (ban_duration_secs = 0) but \
+             ban_list_path is empty: bans would be lost on restart. Set \
+             ban_list_path to the ip_ban list path, or use a non-zero \
+             ban_duration_secs for memory-only temporary bans"
+        ));
     }
 
     if !ip_ban.mode.is_on() {
-        ::log::warn!(
-            "auto_ban is enabled with permanent bans and ban_list_path '{}', but ip_ban is off; \
-             permanent bans are kept in memory only and are never written to or reloaded from \
-             that file",
+        return Err(anyhow::anyhow!(
+            "auto_ban is enabled with permanent bans and ban_list_path '{}', but \
+             ip_ban.mode is 'off': the file would never be loaded, so bans would \
+             be lost on restart. Set ip_ban.mode = 'on' and ip_ban.path = '{}', \
+             or use a non-zero ban_duration_secs for memory-only temporary bans",
             auto.ban_list_path.display(),
-        );
-        return Ok(());
+            auto.ban_list_path.display(),
+        ));
     }
 
     if !paths_refer_to_same_file(&auto.ban_list_path, &ip_ban.path) {
@@ -492,9 +660,9 @@ pub fn validate_auto_ban_config(
 
 /// Compare two paths after resolving them, so that `./ban-list.txt` and
 /// `ban-list.txt` (or different spellings through symlinks) are recognized as
-/// the same file. Falls back to a plain comparison if either path does not
-/// exist yet, which is fine: relative paths that differ textually but point to
-/// the same not-yet-created file are indistinguishable without I/O anyway.
+/// the same file. If a path does not exist yet (and therefore cannot be
+/// canonicalized), fall back to a lexical comparison that collapses `.` and
+/// empty components.
 fn paths_refer_to_same_file(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
@@ -502,8 +670,34 @@ fn paths_refer_to_same_file(a: &Path, b: &Path) -> bool {
 
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
-        _ => false,
+        _ => normalize_path(a) == normalize_path(b),
     }
+}
+
+/// Lexically normalize a path without touching the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 #[cfg(test)]
@@ -645,13 +839,14 @@ mod tests {
         };
         assert!(validate_auto_ban_config(&auto, &mismatched).is_err());
 
-        // A disabled ip_ban list never reloads the file, so mismatched paths
-        // are harmless there.
+        // A disabled ip_ban list never reloads the file, so permanent bans
+        // would be lost on restart. That is now a startup error rather than a
+        // warning.
         let disabled = IpBanConfig {
             mode: IpBanMode::Off,
             path: "other.txt".into(),
         };
-        assert!(validate_auto_ban_config(&auto, &disabled).is_ok());
+        assert!(validate_auto_ban_config(&auto, &disabled).is_err());
 
         // Temporary bans are memory-only and do not touch either file.
         let temporary = AutoBanConfig {
@@ -780,5 +975,102 @@ mod tests {
 
         // Still in memory and still banned
         assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_permanent_ban_is_persisted_immediately() {
+        let tmp = std::env::temp_dir().join("test_auto_ban_immediate.txt");
+        let _ = std::fs::remove_file(&tmp);
+
+        let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 20, 30, 40));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+
+        // The ban must be on disk before any flush runs: a restart at this
+        // point would otherwise unban the IP.
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert_eq!(contents, "10.20.30.40\n");
+
+        // The periodic flush must not append the same IP again.
+        assert_eq!(tracker.flush_to_file(), vec![ip]);
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert_eq!(contents.matches("10.20.30.40").count(), 1);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_validate_auto_ban_rejects_missing_persistence() {
+        let ip_ban_on = IpBanConfig {
+            mode: crate::ip_ban::IpBanMode::On,
+            path: "ban.txt".into(),
+        };
+        let ip_ban_off = IpBanConfig {
+            mode: crate::ip_ban::IpBanMode::Off,
+            path: "ban.txt".into(),
+        };
+
+        let empty_path = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: 0,
+            ban_list_path: "".into(),
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&empty_path, &ip_ban_on).is_err());
+
+        let ip_ban_disabled = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: 0,
+            ban_list_path: "ban.txt".into(),
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&ip_ban_disabled, &ip_ban_off).is_err());
+
+        // Temporary bans are memory-only by design, so they do not need a
+        // persistent list.
+        let temporary = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: 3600,
+            ban_list_path: "".into(),
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&temporary, &ip_ban_off).is_ok());
+    }
+
+    #[test]
+    fn test_validate_auto_ban_rejects_excessive_duration() {
+        let ip_ban = IpBanConfig {
+            mode: crate::ip_ban::IpBanMode::Off,
+            path: "ban.txt".into(),
+        };
+
+        let too_long = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: MAX_BAN_DURATION_SECS + 1,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&too_long, &ip_ban).is_err());
+
+        let max = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: MAX_BAN_DURATION_SECS,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&max, &ip_ban).is_ok());
+    }
+
+    #[test]
+    fn test_paths_compare_equal_before_file_exists() {
+        // Neither file exists, so canonicalize fails and the lexical fallback
+        // must still recognize the same relative path.
+        assert!(paths_refer_to_same_file(
+            Path::new("./aquatic-auto-ban-not-created.txt"),
+            Path::new("aquatic-auto-ban-not-created.txt"),
+        ));
+        assert!(!paths_refer_to_same_file(
+            Path::new("./aquatic-auto-ban-not-created.txt"),
+            Path::new("./aquatic-auto-ban-other.txt"),
+        ));
     }
 }

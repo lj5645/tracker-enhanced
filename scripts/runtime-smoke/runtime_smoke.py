@@ -518,9 +518,11 @@ def udp_autoban(port, workdir):
         check(c.connect() is None, "udp autoban: connect blocked after ban")
     finally:
         c.close()
-    time.sleep(2.0)
+    # Shorter than flush_interval_secs (1s in this config): the ban must
+    # already be on disk without waiting for the periodic flush.
+    time.sleep(0.2)
     content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "udp autoban: banned IP persisted to file")
+    check("127.0.0.1" in content, "udp autoban: banned IP persisted immediately")
 
 
 def udp_ipban(port):
@@ -686,9 +688,11 @@ def http_autoban(port, workdir):
     http_blocked(port, announce_target(PEER_BANNED), "Client banned", "http autoban violation 2")
     http_blocked(port, announce_target(PEER_ALLOWED), "IP auto-banned",
                  "http autoban: allowed client blocked after ban")
-    time.sleep(2.0)
+    # Shorter than flush_interval_secs (1s in this config): the ban must
+    # already be on disk without waiting for the periodic flush.
+    time.sleep(0.2)
     content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "http autoban: banned IP persisted to file")
+    check("127.0.0.1" in content, "http autoban: banned IP persisted immediately")
 
 
 def http_hotreload(port, server, workdir):
@@ -816,9 +820,11 @@ def ws_autoban(port, workdir):
               "ws autoban: violation 2")
         check(ws_announce(ws, PEER_ALLOWED).get("failure reason") == "Access denied",
               "ws autoban: allowed client blocked after ban")
-    time.sleep(2.0)
+    # Shorter than flush_interval_secs (1s in this config): the ban must
+    # already be on disk without waiting for the periodic flush.
+    time.sleep(0.2)
     content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "ws autoban: banned IP persisted to file")
+    check("127.0.0.1" in content, "ws autoban: banned IP persisted immediately")
 
 
 def ws_hotreload(port, server, workdir):

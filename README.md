@@ -216,13 +216,19 @@ enabled = true              # 启用自动封禁
 threshold = 10              # 非法请求次数阈值
 window_secs = 60            # 统计时间窗口（秒）
 ban_duration_secs = 0       # 封禁时长（秒），0 = 永久封禁
-ban_list_path = "./ip-ban-list.txt"  # 封禁IP写入文件，重启后仍然生效
-flush_interval_secs = 60    # 批量写入文件间隔（秒），写入后自动热重载
+ban_list_path = "./ip-ban-list.txt"  # 永久封禁触发时立即写入，重启后仍然生效
+flush_interval_secs = 60    # 重试失败写入、热重载 ip_ban_list 的间隔（秒）
 ```
 
-> 使用 `ban_duration_secs = 0`（永久封禁）时，`ban_list_path` 必须与
-> `[ip_ban] path` 完全一致，否则写入的 IP 不会被重新加载，服务会拒绝启动并给出提示。
-> 临时封禁只保存在内存中，不会写入文件。
+> 永久封禁在触发瞬间写入 `ban_list_path`，不需要等待 flush 间隔，因此重启不会
+> 解除封禁。使用 `ban_duration_secs = 0` 时必须同时设置：
+>
+> - `ban_list_path` 非空；
+> - `[ip_ban] mode = "on"`；
+> - `ban_list_path` 与 `[ip_ban] path` 指向同一文件。
+>
+> 任一条件不满足，服务会拒绝启动并给出提示：否则封禁只会存在于内存，重启后失效。
+> 临时封禁（`ban_duration_secs > 0`）只保存在内存中，不会写入文件。
 >
 > 示例配置中 `auto_ban.enabled` 默认为 `false`：自动封禁依赖各项过滤器计数，
 > 过滤器一旦误判（例如把正常客户端识别为爬虫），大量正常用户会在短时间内被

@@ -55,6 +55,9 @@ enabled = false
 path = ""
 
 [auto_ban]
+# 永久封禁（ban_duration_secs = 0）触发时立即写盘，重启后仍然生效；
+# 此时 ban_list_path 必须与 [ip_ban] 的 path 一致且 [ip_ban] mode = "on"，
+# 否则服务拒绝启动。临时封禁仅内存有效，重启后丢失。
 enabled = false
 threshold = 10
 window_secs = 60
