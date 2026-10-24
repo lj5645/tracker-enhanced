@@ -22,7 +22,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates file python3 python3-pip libhwloc15 \
+            ca-certificates curl file python3 python3-pip libhwloc15 \
             build-essential cmake git
           python3 -m pip install --break-system-packages 'websockets==15.0.1'
 
