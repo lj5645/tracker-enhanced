@@ -503,7 +503,11 @@ impl<I: Ip> LargePeerMap<I> {
             self.peers.keys().copied().collect()
         } else {
             let middle_index = self.peers.len() / 2;
-            let num_to_take_per_half = max_num_peers_to_take / 2;
+            // Take one extra peer per half so that odd limits (including a
+            // request for a single peer) still fill the response. Without the
+            // extra peer, `max / 2 == 0` for `max == 1` and the client would
+            // receive an empty peer list even though peers are available.
+            let num_to_take_per_half = (max_num_peers_to_take / 2) + 1;
 
             let offset_half_one = {
                 let from = 0;
@@ -521,7 +525,7 @@ impl<I: Ip> LargePeerMap<I> {
             let end_half_one = offset_half_one + num_to_take_per_half;
             let end_half_two = offset_half_two + num_to_take_per_half;
 
-            let mut peers = Vec::with_capacity(max_num_peers_to_take);
+            let mut peers = Vec::with_capacity(max_num_peers_to_take + 2);
 
             if let Some(slice) = self.peers.get_range(offset_half_one..end_half_one) {
                 peers.extend(slice.keys());
@@ -529,6 +533,8 @@ impl<I: Ip> LargePeerMap<I> {
             if let Some(slice) = self.peers.get_range(offset_half_two..end_half_two) {
                 peers.extend(slice.keys());
             }
+
+            peers.truncate(max_num_peers_to_take);
 
             peers
         }
@@ -583,6 +589,48 @@ impl PeerStatus {
             Self::Seeding
         } else {
             Self::Leeching
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::prelude::SmallRng;
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_large_peer_map_returns_requested_number_of_peers() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mut peers = LargePeerMap::<Ipv4Addr> {
+            peers: IndexMap::default(),
+            num_seeders: 0,
+            completed_count: 0,
+        };
+        let valid_until = ValidUntil::new(ServerStartInstant::new(), 3600);
+
+        for i in 0..10u8 {
+            peers.insert(
+                ResponsePeer {
+                    ip_address: Ipv4Addr::new(127, 0, 0, i),
+                    port: 1000 + i as u16,
+                },
+                Peer {
+                    valid_until,
+                    is_seeder: false,
+                },
+            );
+        }
+
+        // A request for a single peer used to return an empty list because
+        // `max / 2` is zero.
+        for max in 1..=4 {
+            assert_eq!(
+                peers.extract_response_peers(&mut rng, max).len(),
+                max,
+                "wrong number of peers for max {}",
+                max
+            );
         }
     }
 }

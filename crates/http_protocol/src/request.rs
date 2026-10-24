@@ -133,7 +133,13 @@ impl AnnounceRequest {
                     }
                 }
                 "numwant" => {
-                    opt_numwant = Some(value.parse::<usize>().with_context(|| "parse numwant")?);
+                    // Some clients send -1 (the UDP convention for "use the
+                    // tracker default"). Rejecting the whole announce for that
+                    // is needlessly strict, so treat any negative value as
+                    // "no preference".
+                    let parsed = value.parse::<i64>().with_context(|| "parse numwant")?;
+
+                    opt_numwant = (parsed >= 0).then(|| parsed as usize);
                 }
                 "key" => {
                     if value.len() > 100 {
