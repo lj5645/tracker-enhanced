@@ -133,13 +133,17 @@ impl AnnounceRequest {
                     }
                 }
                 "numwant" => {
+                    // Parse as `i128` so that every `usize` value round-trips
+                    // (the request writer serializes a `usize`) while negative
+                    // values can still be recognized.
+                    let parsed = value.parse::<i128>().with_context(|| "parse numwant")?;
+
                     // Some clients send -1 (the UDP convention for "use the
                     // tracker default"). Rejecting the whole announce for that
                     // is needlessly strict, so treat any negative value as
-                    // "no preference".
-                    let parsed = value.parse::<i64>().with_context(|| "parse numwant")?;
-
-                    opt_numwant = (parsed >= 0).then(|| parsed as usize);
+                    // "no preference". Values beyond `usize::MAX` are not
+                    // meaningful either and fall back to the default limit.
+                    opt_numwant = usize::try_from(parsed).ok();
                 }
                 "key" => {
                     if value.len() > 100 {
@@ -361,6 +365,18 @@ mod tests {
         let reference_request = get_reference_announce_request();
 
         assert_eq!(parsed_request, reference_request);
+    }
+
+    #[test]
+    fn test_negative_numwant_is_treated_as_no_preference() {
+        let path = ANNOUNCE_REQUEST_PATH.replace("numwant=0", "numwant=-1");
+
+        let parsed_request = Request::parse_http_get_path(&path).unwrap();
+
+        match parsed_request {
+            Request::Announce(request) => assert_eq!(request.numwant, None),
+            Request::Scrape(_) => panic!("expected announce request"),
+        }
     }
 
     #[test]
