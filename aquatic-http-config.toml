@@ -186,16 +186,20 @@ path = "./client-ban-list.txt"
 
 [client_whitelist]
 # 模式: on, off
-# 开启后只允许白名单中的客户端访问
-# 注意: 开启白名单会覆盖客户端封禁功能
+# 开启后只允许白名单中的客户端访问。客户端封禁列表仍然生效，
+# 白名单不会覆盖封禁：同一客户端既要在白名单中，也不能在封禁列表中。
 mode = "off"
 
 # 客户端白名单文件路径
-# 文件格式: 每行一个 User-Agent 匹配模式，以 # 开头为注释
+# 一行一个模式，以 # 开头为注释。支持两种写法：
+#   utorrent          User-Agent 子串（不区分大小写），用于 HTTP/WebSocket
+#   -ut               peer_id 前缀（不区分大小写），用于 UDP/WebSocket
+# 同一个文件可以混用两者。UDP 没有 User-Agent，因此使用 UDP 时文件里
+# 必须至少包含一个以 "-" 开头的 peer_id 前缀，否则启动会报错。
 # 示例:
-#   utorrent
-#   transmission
 #   qbittorrent
+#   -qb
+#   -tr
 path = "./client-whitelist.txt"
 
 # ============================================================
@@ -247,7 +251,8 @@ core_offset = 0
 [auto_ban]
 # 是否启用自动封禁
 # 启用后，IP 在时间窗口内非法请求次数达到阈值时会被自动封禁
-# 非法请求包括：IP已封禁、SQL注入、路径遍历、爬虫、缺少User-Agent、客户端封禁、白名单拦截
+# 只有启用对应的 [request_filter] / [client_ban] / [client_whitelist] 检查时，
+# 相应违规才会计数。已被 IP 封禁的请求直接拒绝，不重复计数。
 enabled = true
 
 # 非法请求次数阈值（达到此数量后自动封禁）

@@ -201,7 +201,11 @@ impl WorkerSharedData {
 
             // 5. Client whitelist check
             if self.config.client_whitelist.mode.is_on() {
-                if !self.client_whitelist_cache.load().is_peer_id_allowed(&peer_id_str) {
+                if !self
+                    .client_whitelist_cache
+                    .load()
+                    .allows(Some(&peer_id_str), None)
+                {
                     ::log::debug!("Client not whitelisted: {}", peer_id_str);
                     if let Some(tracker) = &self.shared_state.auto_ban_tracker {
                         tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);

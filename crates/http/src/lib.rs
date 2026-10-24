@@ -7,7 +7,7 @@ use aquatic_common::{
     trusted_proxies::update_trusted_proxies,
     privileges::PrivilegeDropper,
     rustls_config::create_rustls_config,
-    auto_ban::AutoBanTracker,
+    auto_ban::{validate_auto_ban_config, AutoBanTracker},
     WorkerType,
     ServerStartInstant,
 };
@@ -42,6 +42,8 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
             "Both use_ipv4 and use_ipv6 can not be set to false"
         ));
     }
+
+    validate_auto_ban_config(&config.auto_ban, &config.ip_ban)?;
 
     let state = State::default();
 

@@ -8,6 +8,9 @@ use std::time::Instant;
 use aquatic_toml_config::TomlConfig;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
+
+use crate::ip_ban::IpBanConfig;
+
 /// Auto-ban configuration
 #[derive(Clone, Debug, PartialEq, TomlConfig, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -85,6 +88,9 @@ struct IpRecord {
     first_violation: Instant,
     /// Some(instant) if currently banned, None if just counting
     banned_until: Option<Instant>,
+    /// Whether this ban has already been appended to the ban list file.
+    /// Prevents unbounded duplicate lines when a reload keeps failing.
+    persisted: bool,
 }
 
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
@@ -158,6 +164,7 @@ impl AutoBanTracker {
                 if let Some(banned_until) = record.banned_until {
                     if now >= banned_until {
                         record.banned_until = None;
+                        record.persisted = false;
                     }
                 }
 
@@ -169,6 +176,7 @@ impl AutoBanTracker {
                     } else {
                         Some(now + std::time::Duration::from_secs(365 * 24 * 3600))
                     };
+                    record.persisted = false;
                     true
                 } else {
                     false
@@ -190,6 +198,7 @@ impl AutoBanTracker {
                         } else {
                             None
                         },
+                        persisted: false,
                     },
                 );
                 should
@@ -230,40 +239,48 @@ impl AutoBanTracker {
     /// Records are NOT removed from memory yet - call remove_ips() after
     /// ip_ban_list has been successfully reloaded.
     pub fn flush_to_file(&self) -> Vec<IpAddr> {
-        let inner = self.inner.read().unwrap();
-        let now = Instant::now();
-        let is_permanent = inner.ban_duration_secs == 0;
+        // Only permanent bans are written to file: the list format has no
+        // expiration timestamps, so a temporary ban must stay in memory.
+        let (banned, pending_write) = {
+            let inner = self.inner.read().unwrap();
 
-        // Collect IPs that are banned
-        // Only flush permanent bans to file (temporary bans can't be persisted
-        // because the file format doesn't support expiration times)
-        let to_flush: Vec<IpAddr> = if is_permanent {
-            inner
-                .records
-                .iter()
-                .filter(|(_, record)| {
-                    record.banned_until.map_or(false, |until| now < until)
-                })
-                .map(|(ip, _)| *ip)
-                .collect()
-        } else {
-            // For temporary bans, don't write to file - just return empty
-            // The IPs are still tracked in memory and will be cleaned up by cleanup()
-            return Vec::new();
+            if inner.ban_duration_secs != 0 {
+                return Vec::new();
+            }
+
+            let now = Instant::now();
+            let mut banned = Vec::new();
+            let mut pending_write = Vec::new();
+
+            for (ip, record) in inner.records.iter() {
+                if record.banned_until.map_or(false, |until| now < until) {
+                    banned.push(*ip);
+                    if !record.persisted {
+                        pending_write.push(*ip);
+                    }
+                }
+            }
+
+            (banned, pending_write)
         };
 
-        drop(inner); // Release read lock before I/O
-
-        if to_flush.is_empty() {
-            return Vec::new();
+        if banned.is_empty() {
+            return banned;
         }
 
-        // Batch write to file
-        if let Some(path) = &self.ban_list_path {
+        let path = match &self.ban_list_path {
+            Some(path) if !path.as_os_str().is_empty() => path,
+            // No file path configured. Don't report IPs as flushed, otherwise
+            // the flush thread removes them from memory and they escape both
+            // auto_ban and ip_ban_list.
+            _ => return Vec::new(),
+        };
+
+        if !pending_write.is_empty() {
             match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(mut file) => {
-                    let mut lines = String::with_capacity(to_flush.len() * 40);
-                    for ip in &to_flush {
+                    let mut lines = String::with_capacity(pending_write.len() * 40);
+                    for ip in &pending_write {
                         lines.push_str(&ip.to_string());
                         lines.push('\n');
                     }
@@ -273,7 +290,7 @@ impl AutoBanTracker {
                     }
                     ::log::info!(
                         "Auto-ban flush: wrote {} IPs to {}",
-                        to_flush.len(),
+                        pending_write.len(),
                         path.display(),
                     );
                 }
@@ -282,14 +299,20 @@ impl AutoBanTracker {
                     return Vec::new(); // Don't report as flushed if open failed
                 }
             }
-        } else {
-            // No file path configured — don't report as flushed, otherwise
-            // the flush thread will call remove_ips() and the IPs will
-            // escape both auto_ban memory and ip_ban_list
-            return Vec::new();
+
+            let mut inner = self.inner.write().unwrap();
+            for ip in &pending_write {
+                if let Some(record) = inner.records.get_mut(ip) {
+                    record.persisted = true;
+                }
+            }
         }
 
-        to_flush
+        // Return every currently banned IP, including ones written on an
+        // earlier interval. The caller reloads ip_ban_list and only then
+        // calls remove_ips, so a failed reload is retried instead of losing
+        // the ban from both sources.
+        banned
     }
 
     /// Remove IPs from memory after ip_ban_list has been reloaded.
@@ -348,6 +371,42 @@ impl AutoBanTracker {
             ::log::info!("Auto-ban cleanup: removed {} expired entries", removed);
         }
     }
+}
+
+/// Validate the interaction between auto-ban persistence and the IP ban list.
+///
+/// Permanent auto-bans are appended to `auto_ban.ban_list_path`, and after a
+/// flush the server reloads `ip_ban.path` and drops the in-memory records.
+/// If the two paths differ, the just-written bans are never loaded and the
+/// IPs escape both systems until the next violation. Refuse to start rather
+/// than silently weakening the ban list.
+pub fn validate_auto_ban_config(
+    auto: &AutoBanConfig,
+    ip_ban: &IpBanConfig,
+) -> anyhow::Result<()> {
+    if !auto.enabled || auto.ban_duration_secs != 0 {
+        return Ok(());
+    }
+
+    if auto.ban_list_path.as_os_str().is_empty() {
+        ::log::warn!(
+            "auto_ban is enabled with permanent bans but ban_list_path is empty; \
+             bans are kept in memory only and are lost on restart"
+        );
+        return Ok(());
+    }
+
+    if ip_ban.mode.is_on() && auto.ban_list_path != ip_ban.path {
+        return Err(anyhow::anyhow!(
+            "auto_ban.ban_list_path ('{}') must equal ip_ban.path ('{}') when \
+             auto_ban uses permanent bans and ip_ban is enabled; otherwise \
+             flushed bans are never reloaded",
+            auto.ban_list_path.display(),
+            ip_ban.path.display(),
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -414,9 +473,10 @@ mod tests {
         let ip1 = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         let ip2 = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
 
-        // Ban two IPs
+        // Ban two IPs (each needs two violations with threshold=2)
         assert!(!tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
         assert!(tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
+        assert!(!tracker.record_violation(&ip2, AutoBanReason::Crawler));
         assert!(tracker.record_violation(&ip2, AutoBanReason::Crawler));
 
         assert_eq!(tracker.banned_count(), 2);
@@ -438,6 +498,70 @@ mod tests {
         assert!(contents.contains("5.6.7.8"));
 
         let _ = std::fs::remove_file(&tmp); // Clean up
+    }
+
+    #[test]
+    fn test_flush_does_not_duplicate_when_reload_fails() {
+        let tmp = std::env::temp_dir().join("test_auto_ban_no_duplicate.txt");
+        let _ = std::fs::remove_file(&tmp);
+
+        let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
+        let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+
+        // First flush writes the IP. A second flush before remove_ips simulates
+        // a failed ip_ban_list reload: it must report the IP again so the
+        // caller retries, but must not append a duplicate line.
+        assert_eq!(tracker.flush_to_file(), vec![ip]);
+        assert_eq!(tracker.flush_to_file(), vec![ip]);
+
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert_eq!(contents.matches("9.9.9.9").count(), 1);
+
+        tracker.remove_ips(&[ip]);
+        assert_eq!(tracker.banned_count(), 0);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_validate_auto_ban_requires_matching_paths() {
+        use crate::ip_ban::{IpBanConfig, IpBanMode};
+
+        let auto = AutoBanConfig {
+            enabled: true,
+            ban_duration_secs: 0,
+            ban_list_path: "same.txt".into(),
+            ..Default::default()
+        };
+
+        let matching = IpBanConfig {
+            mode: IpBanMode::On,
+            path: "same.txt".into(),
+        };
+        assert!(validate_auto_ban_config(&auto, &matching).is_ok());
+
+        let mismatched = IpBanConfig {
+            mode: IpBanMode::On,
+            path: "other.txt".into(),
+        };
+        assert!(validate_auto_ban_config(&auto, &mismatched).is_err());
+
+        // A disabled ip_ban list never reloads the file, so mismatched paths
+        // are harmless there.
+        let disabled = IpBanConfig {
+            mode: IpBanMode::Off,
+            path: "other.txt".into(),
+        };
+        assert!(validate_auto_ban_config(&auto, &disabled).is_ok());
+
+        // Temporary bans are memory-only and do not touch either file.
+        let temporary = AutoBanConfig {
+            ban_duration_secs: 3600,
+            ..auto
+        };
+        assert!(validate_auto_ban_config(&temporary, &mismatched).is_ok());
     }
 
     #[test]

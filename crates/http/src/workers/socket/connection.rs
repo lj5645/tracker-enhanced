@@ -44,6 +44,20 @@ const RESPONSE_HEADER_C: &[u8] = b"\r\n\r\n";
 static RESPONSE_HEADER: Lazy<Vec<u8>> =
     Lazy::new(|| [RESPONSE_HEADER_A, RESPONSE_HEADER_B, RESPONSE_HEADER_C].concat());
 
+/// Extract the request target from the request line, for example
+/// `/announce?info_hash=...` from `GET /announce?info_hash=... HTTP/1.1`.
+fn extract_request_target(raw_request: &str) -> &str {
+    let request_line = raw_request
+        .split_once("\r\n")
+        .map(|(line, _)| line)
+        .or_else(|| raw_request.split_once('\n').map(|(line, _)| line))
+        .unwrap_or(raw_request);
+
+    let mut parts = request_line.split_whitespace();
+    let _method = parts.next();
+    parts.next().unwrap_or(request_line)
+}
+
 struct PendingScrapeResponse {
     pending_worker_responses: usize,
     stats: BTreeMap<InfoHash, ScrapeStatistics>,
@@ -293,28 +307,54 @@ where
             }
         }
 
+        let opt_peer_id = match request {
+            Request::Announce(announce_request) => {
+                Some(String::from_utf8_lossy(&announce_request.peer_id.0).into_owned())
+            }
+            _ => None,
+        };
+
         // 2. Request filter check
         {
             let filter_config = &self.config.request_filter;
-            
-            if !self.request_filter.is_allowed(
-                raw_request,
-                opt_user_agent.as_deref(),
-                filter_config.filter_missing_user_agent,
-            ) {
-                ::log::debug!("Request filtered: {}", raw_request);
 
-                // Determine the specific reason for auto-ban tracking
-                if let Some(tracker) = &self.auto_ban_tracker {
-                    let reason = if self.request_filter.is_sql_injection(raw_request) {
-                        AutoBanReason::SqlInjection
-                    } else if self.request_filter.is_path_traversal(raw_request) {
-                        AutoBanReason::PathTraversal
-                    } else if self.request_filter.is_crawler(opt_user_agent.as_deref()) {
-                        AutoBanReason::Crawler
-                    } else {
-                        AutoBanReason::MissingUserAgent
-                    };
+            // Check only the request target, not the whole request including
+            // headers: header values may legitimately contain characters that
+            // look like SQL or traversal patterns, and scanning them made
+            // filter results depend on unrelated headers.
+            let request_target = extract_request_target(raw_request);
+
+            if !self.request_filter.is_allowed_with_config(
+                request_target,
+                opt_user_agent.as_deref(),
+                filter_config,
+            ) {
+                ::log::debug!("Request filtered: {}", request_target);
+
+                // Determine the specific reason for auto-ban tracking. Only
+                // report filters that are actually enabled, otherwise a
+                // disabled pattern check can label an unrelated rejection.
+                let reason = if filter_config.filter_sql_injection
+                    && self.request_filter.is_sql_injection(request_target)
+                {
+                    Some(AutoBanReason::SqlInjection)
+                } else if filter_config.filter_path_traversal
+                    && self.request_filter.is_path_traversal(request_target)
+                {
+                    Some(AutoBanReason::PathTraversal)
+                } else if filter_config.filter_crawlers
+                    && self.request_filter.is_crawler(opt_user_agent.as_deref())
+                {
+                    Some(AutoBanReason::Crawler)
+                } else if filter_config.filter_missing_user_agent
+                    && opt_user_agent.is_none()
+                {
+                    Some(AutoBanReason::MissingUserAgent)
+                } else {
+                    None
+                };
+
+                if let (Some(reason), Some(tracker)) = (reason, &self.auto_ban_tracker) {
                     tracker.record_violation(&peer_ip, reason);
                 }
 
@@ -336,25 +376,29 @@ where
         }
 
         // 3. Client whitelist check
-        if self.config.client_whitelist.mode.is_on() {
-            if let Some(user_agent) = opt_user_agent {
-                if !self.client_whitelist_cache.load().is_allowed(user_agent) {
-                    ::log::debug!("Client not whitelisted: {}", user_agent);
-                    if let Some(tracker) = &self.auto_ban_tracker {
-                        tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
-                    }
-                    return Ok(Some(Response::Failure(FailureResponse {
-                        failure_reason: "Client not allowed".into(),
-                    })));
-                }
+        if self.config.client_whitelist.mode.is_on()
+            && !self
+                .client_whitelist_cache
+                .load()
+                .allows(opt_peer_id.as_deref(), opt_user_agent.as_deref())
+        {
+            ::log::debug!(
+                "Client not whitelisted (peer_id: {:?}, user agent: {:?})",
+                opt_peer_id,
+                opt_user_agent
+            );
+            if let Some(tracker) = &self.auto_ban_tracker {
+                tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
             }
+            return Ok(Some(Response::Failure(FailureResponse {
+                failure_reason: "Client not allowed".into(),
+            })));
         }
 
         // 4. Client ban check (for announce requests)
         if self.config.client_ban.mode.is_on() {
-            if let Request::Announce(announce_request) = request {
-                let peer_id = String::from_utf8_lossy(&announce_request.peer_id.0);
-                if self.client_ban_list_cache.load().is_banned(&peer_id) {
+            if let Some(peer_id) = opt_peer_id.as_deref() {
+                if self.client_ban_list_cache.load().is_banned(peer_id) {
                     ::log::debug!("Client banned: {}", peer_id);
                     if let Some(tracker) = &self.auto_ban_tracker {
                         tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);

@@ -21,7 +21,7 @@ use aquatic_common::access_list::update_access_list;
 use aquatic_common::ip_ban::update_ip_ban_list;
 use aquatic_common::client_ban::update_client_ban_list;
 use aquatic_common::client_whitelist::update_client_whitelist;
-use aquatic_common::auto_ban::AutoBanTracker;
+use aquatic_common::auto_ban::{validate_auto_ban_config, AutoBanTracker};
 use aquatic_common::privileges::PrivilegeDropper;
 
 use common::{State, Statistics};
@@ -57,10 +57,25 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     );
     let (statistics_sender, statistics_receiver) = unbounded();
 
+    validate_auto_ban_config(&config.auto_ban, &config.ip_ban)?;
+
     update_access_list(&config.access_list, &state.access_list)?;
     update_ip_ban_list(&config.ip_ban, &state.ip_ban_list)?;
     update_client_ban_list(&config.client_ban, &state.client_ban_list)?;
     update_client_whitelist(&config.client_whitelist, &state.client_whitelist)?;
+
+    // UDP has no User-Agent. A whitelist built only from User-Agent patterns
+    // would therefore reject every announce, so fail with an actionable error.
+    if config.client_whitelist.mode.is_on()
+        && !state.client_whitelist.load().has_peer_id_patterns()
+    {
+        return Err(anyhow::anyhow!(
+            "UDP client whitelist '{}' contains no peer_id prefixes. UDP has no \
+             User-Agent, so add entries starting with '-' (for example '-ut' for \
+             uTorrent, '-tr' for Transmission) or disable client_whitelist.",
+            config.client_whitelist.path.display(),
+        ));
+    }
 
     // Initialize auto-ban tracker
     let auto_ban_tracker = if config.auto_ban.enabled {

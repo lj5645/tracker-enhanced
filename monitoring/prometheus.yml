@@ -3,17 +3,18 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
+  # The tracker runs on the host; host.docker.internal is provided by the
+  # extra_hosts mapping in docker-compose.yml.
   - job_name: 'aquatic-http'
     static_configs:
-      - targets: ['192.168.66.118:9000']
+      - targets: ['host.docker.internal:9000']
         labels:
           instance: 'aquatic-http'
     metrics_path: /metrics
 
   - job_name: 'node-exporter'
     static_configs:
-      # 使用 host 网络模式后，直接访问本地 9100 端口
-      - targets: ['192.168.66.118:9100']
+      - targets: ['host.docker.internal:9100']
         labels:
           instance: 'tracker-server'
 

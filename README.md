@@ -6,7 +6,7 @@
 
 | 模块 | 协议 | 系统要求 |
 |------|------|----------|
-| aquatic_udp | BitTorrent over UDP | Unix-like |
+| aquatic_udp | BitTorrent over UDP | Linux / Windows |
 | aquatic_http | BitTorrent over HTTP（可选 TLS） | Linux 5.8+ |
 | aquatic_ws | WebTorrent（可选 TLS） | Linux 5.8+ |
 
@@ -23,7 +23,7 @@
 
 - **IP 封禁** - 支持单个 IP 和 CIDR 网段封禁
 - **客户端封禁** - 根据 peer_id 模式封禁吸血客户端
-- **客户端白名单** - 仅允许指定 User-Agent 的客户端访问
+- **客户端白名单** - 按 User-Agent 子串或 peer_id 前缀限制客户端（HTTP / UDP / WebSocket 通用）
 - **请求过滤** - 自动拦截 SQL 注入、路径遍历、爬虫等恶意请求
 - **自动封禁** - 非法请求超过阈值自动封禁 IP，支持时间窗口和封禁时长配置
 - **TCP Keepalive** - 快速检测和清理死连接
@@ -50,8 +50,8 @@ sudo apt-get install -y libhwloc15
 ### 3. 配置
 
 ```bash
-# 编辑配置文件
-vim aquatic-http.toml
+# 编辑配置文件（Release 资产中已附带三个示例）
+vim aquatic-http-config.toml
 ```
 
 ### 4. 运行
@@ -59,11 +59,15 @@ vim aquatic-http.toml
 ```bash
 # HTTP Tracker（仅 Linux）
 chmod +x aquatic_http-linux-x86_64
-./aquatic_http-linux-x86_64 -c aquatic-http.toml
+./aquatic_http-linux-x86_64 -c aquatic-http-config.toml
 
 # UDP Tracker（Linux / Windows）
 chmod +x aquatic_udp-linux-x86_64
-./aquatic_udp-linux-x86_64 -c aquatic-udp.toml
+./aquatic_udp-linux-x86_64 -c aquatic-udp-config.toml
+
+# WebTorrent / WebSocket Tracker（仅 Linux）
+chmod +x aquatic_ws-linux-x86_64
+./aquatic_ws-linux-x86_64 -c aquatic-ws-config.toml
 ```
 
 ### 5. 系统优化（推荐）
@@ -130,15 +134,24 @@ path = "./client-ban-list.txt"
 ### 客户端白名单
 
 只允许特定的 BitTorrent 客户端访问，不在白名单中的客户端将被拒绝。
+白名单不会覆盖客户端封禁：同一客户端即使匹配白名单，只要命中封禁列表仍然会被拒绝。
 
 **配置文件**: `client-whitelist.txt`
 
 ```
+# User-Agent 子串（HTTP / WebSocket，不区分大小写）
 utorrent
 transmission
 qbittorrent
 deluge
 libtorrent
+
+# peer_id 前缀（UDP / WebSocket，以 "-" 开头）
+-ut
+-tr
+-qb
+-de
+-lt
 ```
 
 **配置项**:
@@ -149,7 +162,14 @@ mode = "on"
 path = "./client-whitelist.txt"
 ```
 
-匹配规则：使用包含匹配，大小写不敏感。
+匹配规则：
+
+- 不以 `-` 开头的行：User-Agent 包含匹配，不区分大小写。
+- 以 `-` 开头的行：peer_id 前缀匹配，不区分大小写。
+- 两种行可以混在同一个文件中。只要有任意一个适用的模式匹配就放行。
+- UDP 没有 User-Agent，所以使用 UDP 时文件里必须至少有一个 `-` 开头的
+  peer_id 前缀，否则启动会报错。
+- 只有 `client_whitelist` 模式为 `on` 时才会检查。
 
 ### 请求过滤
 
@@ -163,11 +183,15 @@ path = "./client-whitelist.txt"
 | `filter_private_ips` | 阻止私有 IP 地址请求 |
 | `filter_missing_user_agent` | 阻止无 User-Agent 的请求 |
 
-> **注意**: `filter_crawlers = true` 会导致 newTrackon 等 Tracker 检测网站显示 "Request filtered"，因为它们使用 python-requests 发请求。如需被检测网站识别，请设为 `false`。
+> **注意**: `filter_crawlers = true` 会导致 newTrackon 等 Tracker 检测网站显示 "Request filtered"，因为它们使用 python-requests 发请求。如需被检测网站识别，请设为 `false`；同时确认 `filter_missing_user_agent = false`。
+>
+> 所有 `filter_*` 选项默认都是 `false`（按需开启），只有显式写为 `true` 的检查才会执行。
 
 ### 自动封禁
 
-当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。非法请求包括：IP 已封禁、SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent、客户端封禁、白名单拦截。
+当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。只有已启用的检查才会产生违规记录：
+SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent（取决于 `[request_filter]`）、
+客户端封禁、白名单拦截。已被 IP 封禁的请求会直接拒绝，不重复计数。
 
 ```toml
 [auto_ban]
@@ -179,9 +203,13 @@ ban_list_path = "./ip-ban-list.txt"  # 封禁IP写入文件，重启后仍然生
 flush_interval_secs = 60    # 批量写入文件间隔（秒），写入后自动热重载
 ```
 
+> 使用 `ban_duration_secs = 0`（永久封禁）时，`ban_list_path` 必须与
+> `[ip_ban] path` 完全一致，否则写入的 IP 不会被重新加载，服务会拒绝启动并给出提示。
+> 临时封禁只保存在内存中，不会写入文件。
+
 ### 性能优化配置
 
-以下配置项在 `aquatic-http.toml` 中设置，优化脚本会根据硬件自动生成推荐值：
+以下配置项在 `aquatic-http-config.toml` 中设置，优化脚本会根据硬件自动生成推荐值：
 
 ```toml
 [network]

@@ -87,29 +87,71 @@ impl RequestFilter {
         Self::default()
     }
 
-    pub fn check_request(&self, uri: &str, user_agent: Option<&str>, filter_missing_ua: bool) -> FilterResult {
-        let uri_lower = uri.to_lowercase();
+    /// Legacy entry point: applies SQL injection, path traversal and crawler
+    /// filtering, with the missing-User-Agent check controlled by the
+    /// argument. New code should use [`Self::check_request_with_config`] so
+    /// the configured flags are honoured.
+    pub fn check_request(
+        &self,
+        uri: &str,
+        user_agent: Option<&str>,
+        filter_missing_ua: bool,
+    ) -> FilterResult {
+        let config = RequestFilterConfig {
+            filter_sql_injection: true,
+            filter_path_traversal: true,
+            filter_crawlers: true,
+            filter_private_ips: false,
+            filter_missing_user_agent: filter_missing_ua,
+        };
 
-        for pattern in &self.sql_injection_patterns {
-            if uri_lower.contains(pattern) {
-                return FilterResult::BlockedSqlInjection;
-            }
-        }
+        self.check_request_with_config(uri, user_agent, &config)
+    }
 
-        for pattern in &self.path_traversal_patterns {
-            if uri_lower.contains(pattern) {
-                return FilterResult::BlockedPathTraversal;
-            }
-        }
+    pub fn check_request_with_config(
+        &self,
+        uri: &str,
+        user_agent: Option<&str>,
+        config: &RequestFilterConfig,
+    ) -> FilterResult {
+        let uri_lower = if config.filter_sql_injection || config.filter_path_traversal {
+            Some(uri.to_lowercase())
+        } else {
+            None
+        };
 
-        if let Some(ua) = user_agent {
-            let ua_lower = ua.to_lowercase();
-            for pattern in &self.crawler_user_agents {
-                if ua_lower.contains(pattern) {
-                    return FilterResult::BlockedCrawler;
+        if config.filter_sql_injection {
+            if let Some(uri_lower) = uri_lower.as_deref() {
+                for pattern in &self.sql_injection_patterns {
+                    if uri_lower.contains(pattern) {
+                        return FilterResult::BlockedSqlInjection;
+                    }
                 }
             }
-        } else if filter_missing_ua {
+        }
+
+        if config.filter_path_traversal {
+            if let Some(uri_lower) = uri_lower.as_deref() {
+                for pattern in &self.path_traversal_patterns {
+                    if uri_lower.contains(pattern) {
+                        return FilterResult::BlockedPathTraversal;
+                    }
+                }
+            }
+        }
+
+        if config.filter_crawlers {
+            if let Some(ua) = user_agent {
+                let ua_lower = ua.to_lowercase();
+                for pattern in &self.crawler_user_agents {
+                    if ua_lower.contains(pattern) {
+                        return FilterResult::BlockedCrawler;
+                    }
+                }
+            }
+        }
+
+        if user_agent.is_none() && config.filter_missing_user_agent {
             return FilterResult::BlockedMissingUserAgent;
         }
 
@@ -153,6 +195,18 @@ impl RequestFilter {
         matches!(self.check_request(uri, user_agent, filter_missing_ua), FilterResult::Allowed)
     }
 
+    pub fn is_allowed_with_config(
+        &self,
+        uri: &str,
+        user_agent: Option<&str>,
+        config: &RequestFilterConfig,
+    ) -> bool {
+        matches!(
+            self.check_request_with_config(uri, user_agent, config),
+            FilterResult::Allowed
+        )
+    }
+
     pub fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
         matches!(self.check_ip(ip), FilterResult::Allowed)
     }
@@ -179,6 +233,7 @@ impl RequestFilter {
 }
 
 #[derive(Clone, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct RequestFilterConfig {
     pub filter_sql_injection: bool,
     pub filter_path_traversal: bool,
@@ -194,10 +249,12 @@ pub struct RequestFilterConfig {
 
 impl Default for RequestFilterConfig {
     fn default() -> Self {
+        // Filters are opt-in. A tracker must not reject legitimate clients
+        // because a config file predates a new filter or omits a flag.
         Self {
-            filter_sql_injection: true,
-            filter_path_traversal: true,
-            filter_crawlers: true,
+            filter_sql_injection: false,
+            filter_path_traversal: false,
+            filter_crawlers: false,
             filter_private_ips: false,
             filter_missing_user_agent: false,
         }
@@ -277,6 +334,63 @@ mod tests {
         // 有 UA 的请求不受影响
         assert_eq!(
             filter.check_request("/announce", Some("uTorrent/3.5.5"), true),
+            FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_config_flags_are_honoured() {
+        let filter = RequestFilter::new();
+
+        let disabled = RequestFilterConfig::default();
+
+        // Defaults must allow legitimate clients and opt out of every filter.
+        assert_eq!(
+            filter.check_request_with_config(
+                "/announce?info_hash=union select",
+                Some("python-requests/2.28.0"),
+                &disabled
+            ),
+            FilterResult::Allowed
+        );
+        assert_eq!(
+            filter.check_request_with_config("/../../../etc/passwd", None, &disabled),
+            FilterResult::Allowed
+        );
+
+        let sql_only = RequestFilterConfig {
+            filter_sql_injection: true,
+            ..disabled.clone()
+        };
+        assert_eq!(
+            filter.check_request_with_config("/announce?info_hash=' OR 1=1", None, &sql_only),
+            FilterResult::BlockedSqlInjection
+        );
+        assert_eq!(
+            filter.check_request_with_config("/../etc/passwd", None, &sql_only),
+            FilterResult::Allowed
+        );
+
+        let path_only = RequestFilterConfig {
+            filter_path_traversal: true,
+            ..disabled.clone()
+        };
+        assert_eq!(
+            filter.check_request_with_config("/../etc/passwd", None, &path_only),
+            FilterResult::BlockedPathTraversal
+        );
+
+        let crawler_only = RequestFilterConfig {
+            filter_crawlers: true,
+            ..disabled.clone()
+        };
+        assert_eq!(
+            filter
+                .check_request_with_config("/announce", Some("curl/7.68.0"), &crawler_only),
+            FilterResult::BlockedCrawler
+        );
+        assert_eq!(
+            filter.check_request_with_config("/announce", Some("uTorrent/3.5.5"), &crawler_only),
             FilterResult::Allowed
         );
     }

@@ -1,44 +1,42 @@
 #!/bin/bash
+set -euo pipefail
 
 echo "=== Aquatic Tracker Monitoring Setup ==="
 
-# 检查 Docker 是否安装
-if ! command -v docker &> /dev/null; then
-    echo "Docker not found. Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    systemctl start docker
-    systemctl enable docker
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is required. Install it first: https://docs.docker.com/engine/install/" >&2
+    exit 1
 fi
 
-# 检查 Docker Compose 是否安装
-if ! command -v docker-compose &> /dev/null; then
-    echo "Docker Compose not found. Installing..."
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+else
+    echo "Docker Compose is required (docker compose plugin or docker-compose)." >&2
+    exit 1
 fi
 
-# 创建目录
-mkdir -p monitoring/grafana/provisioning/datasources
-mkdir -p monitoring/grafana/provisioning/dashboards
+if [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
+    echo "Set GRAFANA_ADMIN_PASSWORD before running this script." >&2
+    echo "Example: GRAFANA_ADMIN_PASSWORD='strong-password' ./monitoring/setup.sh" >&2
+    exit 1
+fi
 
-# 进入监控目录
-cd monitoring
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# 启动服务
 echo "Starting Prometheus and Grafana..."
-docker-compose up -d
+"${COMPOSE[@]}" up -d
 
 echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Services:"
-echo "  - Prometheus:  http://localhost:9090"
-echo "  - Grafana:     http://localhost:3000"
-echo "  - Metrics Proxy (CORS): http://localhost:9001/metrics"
+echo "  - Prometheus: http://localhost:9090"
+echo "  - Grafana:    http://localhost:3001"
 echo ""
-echo "Grafana Login:"
-echo "  Username: admin"
-echo "  Password: admin123"
+echo "Grafana login: admin / (the password you supplied)"
 echo ""
-echo "To stop services: docker-compose down"
-echo "To view logs: docker-compose logs -f"
+echo "To stop services: cd monitoring && ${COMPOSE[*]} down"
+echo "To view logs:     cd monitoring && ${COMPOSE[*]} logs -f"

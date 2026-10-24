@@ -65,8 +65,9 @@ pub struct Config {
     pub client_ban: ClientBanConfig,
     /// Client whitelist configuration
     ///
-    /// Only allow specific BitTorrent clients by User-Agent pattern.
-    /// When enabled, clients not in the whitelist will be blocked.
+    /// Only allow specific BitTorrent clients. Entries not starting with `-`
+    /// match User-Agent substrings; entries starting with `-` match peer_id
+    /// prefixes. When enabled, clients not in the whitelist will be blocked.
     /// The file is read on start and when the program receives `SIGUSR2`.
     pub client_whitelist: ClientWhitelistConfig,
     /// Request filter configuration

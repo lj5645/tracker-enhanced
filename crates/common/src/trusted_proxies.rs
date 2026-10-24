@@ -94,6 +94,20 @@ impl TrustedProxies {
     }
 }
 
+/// Return the rightmost valid IP in an `X-Forwarded-For` header.
+///
+/// The rightmost entry was appended by the trusted reverse proxy that accepted
+/// the connection; entries to its left are client-supplied. Using the leftmost
+/// value lets a client spoof its address with
+/// `X-Forwarded-For: <fake>, $proxy_add_x_forwarded_for`.
+pub fn last_forwarded_for_ip(header: &str) -> Option<IpAddr> {
+    header
+        .split(',')
+        .rev()
+        .filter_map(|value| value.trim().parse::<IpAddr>().ok())
+        .next()
+}
+
 pub type TrustedProxiesArcSwap = ArcSwap<TrustedProxies>;
 
 pub fn update_trusted_proxies(
@@ -143,6 +157,26 @@ mod tests {
         assert!(proxies.is_trusted("10.0.0.1".parse().unwrap()));
         assert!(!proxies.is_trusted("10.0.0.2".parse().unwrap()));
         assert!(!proxies.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_last_forwarded_for_ip() {
+        assert_eq!(
+            last_forwarded_for_ip("1.2.3.4, 10.0.0.1, 203.0.113.1"),
+            Some("203.0.113.1".parse().unwrap())
+        );
+        // Whitespace around entries is common.
+        assert_eq!(
+            last_forwarded_for_ip("2001:db8::1, 198.51.100.7"),
+            Some("198.51.100.7".parse().unwrap())
+        );
+        // A malformed rightmost entry falls back to the next valid one.
+        assert_eq!(
+            last_forwarded_for_ip("1.2.3.4, not-an-ip"),
+            Some("1.2.3.4".parse().unwrap())
+        );
+        assert_eq!(last_forwarded_for_ip(""), None);
+        assert_eq!(last_forwarded_for_ip("not-an-ip"), None);
     }
 
     #[test]

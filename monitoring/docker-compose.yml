@@ -1,4 +1,8 @@
-version: '3.8'
+# Standalone monitoring stack for a tracker running on the host.
+#
+# Usage:
+#   GRAFANA_ADMIN_PASSWORD='strong-password' docker compose up -d
+#   GRAFANA_ROOT_URL='https://tracker.example.com' GRAFANA_ADMIN_PASSWORD='...' docker compose up -d
 
 services:
   prometheus:
@@ -14,9 +18,8 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
-      - '--web.cors.origin=.*'
-    networks:
-      - dpanel_default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -40,25 +43,20 @@ services:
     container_name: aquatic-grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # 3000 is a common tracker port, so use 3001 on the host.
+      - "3001:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=https://tracker.skyts.cc.cd
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
       - GF_SERVER_SERVE_FROM_SUB_PATH=false
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
-    networks:
-      - dpanel_default
 
 volumes:
   prometheus-data:
   grafana-data:
-
-networks:
-  dpanel_default:
-    external: true

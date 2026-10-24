@@ -46,7 +46,13 @@ jobs:
         cargo build --release -p aquatic_http --features cpu-pinning
         strip target/release/aquatic_http
         mv target/release/aquatic_http target/release/aquatic_http-linux-x86_64
-    
+
+    - name: Build aquatic_ws
+      run: |
+        cargo build --release -p aquatic_ws
+        strip target/release/aquatic_ws
+        mv target/release/aquatic_ws target/release/aquatic_ws-linux-x86_64
+
     - name: Upload Linux artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -54,6 +60,7 @@ jobs:
         path: |
           target/release/aquatic_udp-linux-x86_64
           target/release/aquatic_http-linux-x86_64
+          target/release/aquatic_ws-linux-x86_64
         retention-days: 1
 
   build-windows:
@@ -105,9 +112,15 @@ jobs:
         name: windows-binaries
         path: artifacts/windows-binaries
     
+    - name: Prepare configuration examples
+      run: |
+        mkdir -p artifacts/config
+        cp aquatic-http-config.toml aquatic-udp-config.toml aquatic-ws-config.toml artifacts/config/
+        cp access-list.txt client-ban-list.txt client-whitelist.txt ip-ban-list.txt artifacts/config/
+
     - name: Display structure of downloaded files
       run: ls -R artifacts
-    
+
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
@@ -121,7 +134,7 @@ jobs:
           ### 功能特性
           - IP 封禁（支持 CIDR 网段）
           - 客户端封禁（吸血客户端拦截）
-          - 客户端白名单（User-Agent 过滤）
+          - 客户端白名单（User-Agent 子串 / peer_id 前缀，HTTP/UDP/WS 通用）
           - 请求过滤（SQL 注入、路径遍历、爬虫拦截）
           - TCP Keepalive（死连接快速清理）
           - 连接数限制（防止连接风暴）
@@ -133,17 +146,20 @@ jobs:
           ### 下载文件
           | 平台 | 文件 |
           |------|------|
-          | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64 |
+          | Linux x86_64 | aquatic_udp-linux-x86_64, aquatic_http-linux-x86_64, aquatic_ws-linux-x86_64 |
           | Windows x86_64 | aquatic_udp-windows-x86_64.exe（如可用） |
+          | 配置示例 | artifacts/config/ 下三个 TOML 与封禁/白名单列表 |
 
           ### 使用方法
           ```bash
           # Linux
           chmod +x aquatic_*
-          ./aquatic_http-linux-x86_64 -c aquatic-http.toml
+          ./aquatic_http-linux-x86_64 -c aquatic-http-config.toml
+          ./aquatic_udp-linux-x86_64 -c aquatic-udp-config.toml
+          ./aquatic_ws-linux-x86_64 -c aquatic-ws-config.toml
 
           # Windows（仅 aquatic_udp 可用）
-          .\aquatic_udp.exe -c aquatic-udp.toml
+          .\aquatic_udp-windows-x86_64.exe -c aquatic-udp-config.toml
           ```
 
           ### 运行时依赖
@@ -164,5 +180,6 @@ jobs:
         files: |
           artifacts/linux-binaries/*
           artifacts/windows-binaries/*
+          artifacts/config/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

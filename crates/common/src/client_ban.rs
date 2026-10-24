@@ -64,8 +64,15 @@ impl ClientBanList {
     }
 
     pub fn is_banned(&self, peer_id: &str) -> bool {
+        // These prefixes are known leech-only ("vampire") clients. They apply
+        // in addition to the configurable list so a stale list file cannot
+        // silently re-enable them.
+        if is_vampire_client(peer_id) {
+            return true;
+        }
+
         let peer_id_lower = peer_id.to_lowercase();
-        
+
         for pattern in &self.banned_patterns {
             if peer_id_lower.starts_with(pattern) {
                 return true;
@@ -168,6 +175,19 @@ mod tests {
         // 不应该被封禁（包含但不是开头）
         assert!(!list.is_banned("abc-xl-def"));
         assert!(!list.is_banned("some-sd-client"));
+    }
+
+    #[test]
+    fn test_builtin_vampire_ban_applies_to_empty_list() {
+        // An empty list file must still reject the built-in vampire clients,
+        // otherwise the documented built-in detection is dead code.
+        let list = ClientBanList::default();
+
+        assert!(list.is_banned("-XL0012-abc123"));
+        assert!(list.is_banned("-SD1234-def456"));
+        assert!(list.is_banned("-QD5678-ghi012"));
+        assert!(!list.is_banned("-UT3456-jkl345"));
+        assert!(!list.is_banned("-TR7890-mno678"));
     }
 
     #[test]

@@ -19,11 +19,16 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential libhwloc-dev
     - name: Build
       run: |
         cargo build --verbose -p aquatic_udp --features metrics
         cargo build --verbose -p aquatic_http --features metrics
         cargo build --verbose -p aquatic_ws --features metrics
+        cargo build --verbose -p aquatic_http --features "metrics,cpu-pinning"
 
   build-macos:
     runs-on: macos-latest

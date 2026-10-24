@@ -1,5 +1,26 @@
 # 更新日志
 
+## v1.4.0
+
+### 修复
+
+- **请求过滤开关真正生效**：HTTP tracker 之前无条件执行 SQL 注入、路径遍历和爬虫检查，忽略 `[request_filter]` 中的三个布尔项。现在只执行显式启用的检查，并只扫描请求行中的 URI（不再扫描整个请求头）
+- **过滤项默认关闭**：`RequestFilterConfig` 默认值改为全部 `false`，缺少配置段的旧配置文件不会再意外拦截合法客户端
+- **客户端白名单协议语义统一**：白名单文件区分 User-Agent 子串（普通行）和 peer_id 前缀（`-` 开头行）。HTTP、UDP、WebSocket 都使用同一套 `allows(peer_id, user_agent)` 逻辑，修复 UDP 用 User-Agent 模式匹配 peer_id 导致全部客户端被拦截、以及 WebSocket 先检查 peer_id 导致 User-Agent 白名单失效的问题
+- **白名单空文件/纯 UA 文件失败关闭**：启用白名单但文件为空时拒绝启动；UDP 启用白名单但文件中没有 peer_id 前缀时给出明确错误，而不是封死所有客户端
+- **HTTP 缺失 User-Agent 绕过白名单**：白名单检查不再被 `if let Some(user_agent)` 包裹，是否允许无 UA 请求由白名单模式决定
+- **自动封禁重复写文件**：`ip_ban_list` 热重载失败时，不再每个周期重复追加相同 IP；写入成功的 IP 会被标记，重载仍会重试，成功后才从内存移除
+- **自动封禁配置校验**：永久封禁模式下 `auto_ban.ban_list_path` 与 `ip_ban.path` 不一致时拒绝启动，避免写入的封禁永远不会被加载
+- **内置吸血客户端检测生效**：`is_vampire_client` 之前只被测试调用，现在接入 `ClientBanList::is_banned`
+- **WebSocket X-Forwarded-For 防伪造**：改为取最右侧地址（由可信代理追加），不再取客户端可控制的左侧地址
+- **修复自动封禁测试**：`test_flush_to_file_permanent_ban` 中第二个 IP 未达到阈值却断言被封禁
+
+### 变更
+
+- 新增 `aquatic-udp-config.toml`、`aquatic-ws-config.toml` 示例配置
+- README 更新白名单/自动封禁/过滤项说明与配置文件名
+- CI 增加 `cpu-pinning` 构建；Release 增加 Linux WebSocket 二进制和示例配置
+
 ## v1.3.9
 
 ### 修复

@@ -53,9 +53,11 @@ pub struct Config {
     pub client_ban: ClientBanConfig,
     /// Client whitelist configuration
     ///
-    /// Only allow specific BitTorrent clients by peer_id prefix.
-    /// When enabled, clients not in the whitelist will be blocked.
-    /// The file is read on start and when the program receives `SIGUSR2`.
+    /// Only allow specific BitTorrent clients. UDP has no User-Agent, so the
+    /// whitelist file must contain at least one peer_id prefix (a line
+    /// starting with `-`). When enabled, clients not in the whitelist will be
+    /// blocked. The file is read on start and when the program receives
+    /// `SIGUSR2`.
     pub client_whitelist: ClientWhitelistConfig,
     /// Request filter configuration
     ///

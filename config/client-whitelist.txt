@@ -1,21 +1,45 @@
 # Client Whitelist
-# One User-Agent pattern per line (case-insensitive matching)
-# Lines starting with # are comments
-# When enabled, only clients matching these patterns will be allowed
+#
+# One pattern per line (case-insensitive), lines starting with # are comments.
+# Two kinds of entries are supported in the same file:
+#   utorrent     User-Agent substring (HTTP / WebSocket)
+#   -ut          peer_id prefix (UDP / WebSocket, and HTTP announce)
+#
+# UDP has no User-Agent, so a whitelist used by UDP must contain at least one
+# peer_id prefix starting with "-"; startup fails with a clear error otherwise.
+#
+# The client ban list still applies: a whitelisted client can also be banned.
 
-# Common BitTorrent Clients
+# uTorrent
 utorrent
-bittorrent
+-ut
+
+# Transmission
 transmission
+-tr
+
+# qBittorrent
 qbittorrent
+-qb
+
+# Deluge
 deluge
-libtorrent
+-de
+
+# rTorrent
 rtorrent
+-rt
+
+# libtorrent
+libtorrent
+-lt
+
+# BitTorrent / Mainline
+# Note: client-ban-list.txt bans -bt (BitThief), so only the User-Agent is
+# listed here. Remove that ban entry if you want to allow Mainline's -bt.
+bittorrent
+
+# Vuze / Azureus
 vuze
 azureus
-bitcomet
-
-# Version examples (contains matching, version doesn't matter)
-# uTorrent/3.5.5 -> matches "utorrent"
-# Transmission/3.00 -> matches "transmission"
-# qBittorrent/4.5.0 -> matches "qbittorrent"
+-az

@@ -13,7 +13,7 @@ use aquatic_common::client_ban::{ClientBanListArcSwap, ClientBanListCache, creat
 use aquatic_common::client_whitelist::{ClientWhitelistArcSwap, ClientWhitelistCache, create_client_whitelist_cache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanTracker, AutoBanReason};
-use aquatic_common::trusted_proxies::TrustedProxiesArcSwap;
+use aquatic_common::trusted_proxies::{last_forwarded_for_ip, TrustedProxiesArcSwap};
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::ServerStartInstant;
 use aquatic_ws_protocol::common::{InfoHash, PeerId, ScrapeAction};
@@ -213,18 +213,17 @@ impl ConnectionRunner {
             let trusted_proxies = self.trusted_proxies.load();
             if trusted_proxies.is_trusted(self.peer_ip) {
                 if let Some(xff) = handshake_xff.borrow().as_ref() {
-                    // X-Forwarded-For: client, proxy1, proxy2 — take the first (leftmost) IP
-                    if let Some(client_ip_str) = xff.split(',').next() {
-                        let client_ip_str = client_ip_str.trim();
-                        if let Ok(client_ip) = client_ip_str.parse::<IpAddr>() {
-                            peer_ip = client_ip;
-                        } else {
-                            ::log::warn!(
-                                "Invalid X-Forwarded-For IP from trusted proxy {}: {}",
-                                self.peer_ip,
-                                client_ip_str
-                            );
-                        }
+                    // X-Forwarded-For: client, proxy1, proxy2. The rightmost
+                    // entry is the one appended by the trusted proxy; the
+                    // leftmost value is client-controlled and spoofable.
+                    if let Some(client_ip) = last_forwarded_for_ip(xff) {
+                        peer_ip = client_ip;
+                    } else {
+                        ::log::warn!(
+                            "Invalid X-Forwarded-For header from trusted proxy {}: {}",
+                            self.peer_ip,
+                            xff
+                        );
                     }
                 }
             }
@@ -373,50 +372,40 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
             return true;
         }
 
-        // 4. Client ban check (for announce requests with peer_id)
-        if let Some(peer_id) = peer_id_opt {
-            let peer_id_str = String::from_utf8_lossy(&peer_id.0);
+        let peer_id_str =
+            peer_id_opt.map(|peer_id| String::from_utf8_lossy(&peer_id.0).into_owned());
 
-            if self.config.client_ban.mode.is_on() {
-                if self.client_ban_list_cache.load().is_banned(&peer_id_str) {
-                    ::log::debug!("Client banned: {}", peer_id_str);
+        // 4. Client ban check (for announce requests with peer_id)
+        if self.config.client_ban.mode.is_on() {
+            if let Some(peer_id) = peer_id_str.as_deref() {
+                if self.client_ban_list_cache.load().is_banned(peer_id) {
+                    ::log::debug!("Client banned: {}", peer_id);
                     if let Some(tracker) = &self.auto_ban_tracker {
                         tracker.record_violation(&self.peer_ip, AutoBanReason::ClientBanned);
                     }
                     return true;
                 }
             }
-
-            // 5. Client whitelist check (by peer_id)
-            if self.config.client_whitelist.mode.is_on() {
-                if !self.client_whitelist_cache.load().is_peer_id_allowed(&peer_id_str) {
-                    ::log::debug!("Client not whitelisted: {}", peer_id_str);
-                    if let Some(tracker) = &self.auto_ban_tracker {
-                        tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
-                    }
-                    return true;
-                }
-            }
         }
 
-        // 6. Client whitelist check (by User-Agent from handshake)
-        if self.config.client_whitelist.mode.is_on() {
-            if let Some(ref ua) = self.handshake_user_agent {
-                if !self.client_whitelist_cache.load().is_allowed(ua) {
-                    ::log::debug!("User-Agent not whitelisted: {}", ua);
-                    if let Some(tracker) = &self.auto_ban_tracker {
-                        tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
-                    }
-                    return true;
-                }
-            } else {
-                // Whitelist is enabled but no User-Agent — cannot verify, block
-                ::log::debug!("No User-Agent while whitelist is enabled");
-                if let Some(tracker) = &self.auto_ban_tracker {
-                    tracker.record_violation(&self.peer_ip, AutoBanReason::MissingUserAgent);
-                }
-                return true;
+        // 5. Client whitelist check. A single check covers both pattern types:
+        // previously the peer_id check returned early, making a User-Agent
+        // whitelist useless for announce messages.
+        if self.config.client_whitelist.mode.is_on()
+            && !self.client_whitelist_cache.load().allows(
+                peer_id_str.as_deref(),
+                self.handshake_user_agent.as_deref(),
+            )
+        {
+            ::log::debug!(
+                "Client not whitelisted (peer_id: {:?}, user agent: {:?})",
+                peer_id_str,
+                self.handshake_user_agent
+            );
+            if let Some(tracker) = &self.auto_ban_tracker {
+                tracker.record_violation(&self.peer_ip, AutoBanReason::NotWhitelisted);
             }
+            return true;
         }
 
         false

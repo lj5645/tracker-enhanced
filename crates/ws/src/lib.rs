@@ -18,7 +18,7 @@ use aquatic_common::ip_ban::update_ip_ban_list;
 use aquatic_common::client_ban::update_client_ban_list;
 use aquatic_common::client_whitelist::update_client_whitelist;
 use aquatic_common::trusted_proxies::update_trusted_proxies;
-use aquatic_common::auto_ban::AutoBanTracker;
+use aquatic_common::auto_ban::{validate_auto_ban_config, AutoBanTracker};
 use aquatic_common::privileges::PrivilegeDropper;
 
 use common::*;
@@ -37,6 +37,8 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     }
 
     let mut signals = Signals::new([SIGUSR1, SIGUSR2])?;
+
+    validate_auto_ban_config(&config.auto_ban, &config.ip_ban)?;
 
     let mut state = State::default();
 
