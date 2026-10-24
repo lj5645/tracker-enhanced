@@ -1,5 +1,17 @@
 # 更新日志
 
+## v1.5.3
+
+### 修复
+
+- **`peer_id_allowlist_path` 不豁免 User-Agent 一致性检查**：之前只有 `peer_id_strictness` 会查询 allowlist，UA 判定不一致的客户端即使写进 allowlist 仍会被拒绝，误判没有逃生通道。现在两项检测都会跳过 allowlist 中命中的 peer_id
+- **`enforce` 拒绝时没有可见日志**：之前只打 `debug`，默认日志级别下服务端没有任何提示，用户只会看到“连不上”。现在限频写入 warn 日志（`client rejected: ...`），并与 `warn` 模式的日志窗口分开计数，互不挤占
+- **`enforce` 与自动封禁叠加无提示**：服务启动时若 `auto_ban.enabled = true` 且任一身份检测为 `enforce`，打印显式警告。该组合下每次拒绝都计为违规，一次误判可能在 `window_secs` 内触发永久封禁
+
+### 测试
+
+- 新增 allowlist 豁免 UA 一致性检查的单元测试（命中前缀跳过、其他 peer_id 仍被检查）
+
 ## v1.5.2
 
 ### 修复

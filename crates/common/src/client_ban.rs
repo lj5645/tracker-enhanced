@@ -8,6 +8,7 @@ use arc_swap::{ArcSwap, Cache};
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
 
+use crate::auto_ban::AutoBanConfig;
 use crate::list_file::read_list_file;
 
 #[derive(Clone, Copy, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
@@ -232,7 +233,10 @@ impl ClientBanList {
         user_agent: &str,
         mode: PeerIdCheckMode,
     ) -> IdentityCheck {
-        if mode.is_off() {
+        // The allowlist is the escape hatch for false positives. It has to
+        // apply here as well, otherwise a client misdetected by its
+        // User-Agent could only be exempted by disabling the check.
+        if mode.is_off() || self.is_peer_id_allowlisted(peer_id) {
             return IdentityCheck::Ok;
         }
 
@@ -418,18 +422,16 @@ pub enum PeerIdIssue {
 impl PeerIdIssue {
     pub fn describe(&self) -> String {
         match self {
-            Self::NonStandard => {
-                "client rejected: peer id is not Azureus- or Mainline-style".to_string()
-            }
+            Self::NonStandard => "peer id is not Azureus- or Mainline-style".to_string(),
             Self::UnsupportedVersion(issue) => format!(
-                "client rejected: peer id claims {} major version {}, but the highest known version is {}",
+                "peer id claims {} major version {}, but the highest known version is {}",
                 issue.code, issue.version, issue.max_version
             ),
             Self::UserAgentMismatch {
                 peer_id_family,
                 user_agent_family,
             } => format!(
-                "client rejected: peer id claims {}, but User-Agent claims {}",
+                "peer id claims {}, but User-Agent claims {}",
                 peer_id_family.as_str(),
                 user_agent_family.as_str()
             ),
@@ -561,38 +563,86 @@ pub fn user_agent_family(user_agent: &str) -> Option<PeerClientFamily> {
     }
 }
 
-const IDENTITY_WARN_INTERVAL_SECS: u64 = 60;
+const IDENTITY_LOG_INTERVAL_SECS: u64 = 60;
 
+// Separate windows so a flood of warn-mode messages cannot hide the fact that
+// announce requests are actually being rejected.
 static LAST_IDENTITY_WARNING: AtomicU64 = AtomicU64::new(0);
+static LAST_IDENTITY_REJECTION: AtomicU64 = AtomicU64::new(0);
 
 fn report_identity_issue(issue: PeerIdIssue, mode: PeerIdCheckMode) -> IdentityCheck {
     if mode.is_enforce() {
-        ::log::debug!("{}", issue.describe());
+        // Rejections must be visible at the default log level: without this,
+        // users report "I cannot connect" while the server logs nothing.
+        warn_rate_limited(
+            &LAST_IDENTITY_REJECTION,
+            &format!("client rejected: {}", issue.describe()),
+        );
         IdentityCheck::Rejected
     } else {
-        warn_rate_limited(&issue.describe());
+        warn_rate_limited(
+            &LAST_IDENTITY_WARNING,
+            &format!("client warning: {}", issue.describe()),
+        );
         IdentityCheck::Warned
     }
 }
 
-/// Log at most one identity warning per minute.
+/// Log at most one identity message per minute per category.
 ///
-/// Warn mode is meant to be left enabled while observing false positives, so
-/// an unthrottled `warn!` could flood the log under load.
-fn warn_rate_limited(message: &str) {
+/// Checks are meant to be left enabled while observing false positives, so an
+/// unthrottled `warn!` could flood the log under load.
+fn warn_rate_limited(last_log: &AtomicU64, message: &str) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let last = LAST_IDENTITY_WARNING.load(Ordering::Relaxed);
+    let last = last_log.load(Ordering::Relaxed);
 
-    if now.saturating_sub(last) >= IDENTITY_WARN_INTERVAL_SECS
-        && LAST_IDENTITY_WARNING
+    if now.saturating_sub(last) >= IDENTITY_LOG_INTERVAL_SECS
+        && last_log
             .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
     {
         ::log::warn!("{}", message);
     }
+}
+
+/// Warn when identity checks can feed the auto-ban system.
+///
+/// In `enforce` mode a rejected announce counts as an auto-ban violation. A
+/// false positive (stale version table, customized User-Agent, a client the
+/// allowlist does not cover) can therefore turn into a permanent IP ban within
+/// one threshold window, so make the combination explicit at startup.
+pub fn warn_about_identity_enforce_with_auto_ban(
+    client_ban: &ClientBanConfig,
+    auto_ban: &AutoBanConfig,
+) {
+    if !auto_ban.enabled {
+        return;
+    }
+
+    let mut enforced = Vec::new();
+
+    if client_ban.peer_id_strictness.is_enforce() {
+        enforced.push("peer_id_strictness");
+    }
+
+    if client_ban.peer_id_user_agent_mismatch.is_enforce() {
+        enforced.push("peer_id_user_agent_mismatch");
+    }
+
+    if enforced.is_empty() {
+        return;
+    }
+
+    ::log::warn!(
+        "{} set to \"enforce\" while auto_ban is enabled: every rejected announce counts as \
+         a violation, so a false positive can ban an IP within {} second(s). Run these checks \
+         in \"warn\" mode first and add known-good peer ids to peer_id_allowlist_path.",
+        enforced.join(", "),
+        auto_ban.window_secs,
+    );
 }
 
 #[cfg(test)]
@@ -802,6 +852,31 @@ mod tests {
             list.check_peer_id_user_agent(
                 b"-qB4600-abcdefghijkl",
                 "BitTorrent/7.10",
+                PeerIdCheckMode::Enforce
+            ),
+            IdentityCheck::Rejected
+        );
+    }
+
+    #[test]
+    fn test_allowlist_bypasses_user_agent_mismatch() {
+        let mut list = ClientBanList::default();
+        list.allowed_peer_id_prefixes
+            .insert("-qb".to_string());
+
+        assert_eq!(
+            list.check_peer_id_user_agent(
+                b"-qB4600-abcdefghijkl",
+                "Transmission/4.0.2",
+                PeerIdCheckMode::Enforce
+            ),
+            IdentityCheck::Ok
+        );
+        // A different peer id is still checked.
+        assert_eq!(
+            list.check_peer_id_user_agent(
+                b"-TR4050-abcdefghijkl",
+                "qBittorrent/4.6.0",
                 PeerIdCheckMode::Enforce
             ),
             IdentityCheck::Rejected

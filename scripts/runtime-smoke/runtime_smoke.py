@@ -604,7 +604,7 @@ def udp_hotreload(port, server, workdir):
         c.close()
 
 
-def udp_peer_id_format(port):
+def udp_peer_id_format(port, server):
     c = UdpClient(port)
     try:
         cid = c.connect()
@@ -619,6 +619,9 @@ def udp_peer_id_format(port):
               "udp peer id: fake version rejected")
     finally:
         c.close()
+    time.sleep(0.5)
+    check("client rejected:" in server.log_tail(lines=200),
+          "udp peer id: rejection logged")
 
 
 def udp_peer_id_warn(port, server):
@@ -767,7 +770,7 @@ def http_hotreload(port, server, workdir):
                  "http hotreload: unbanned after second SIGUSR2")
 
 
-def http_peer_id_format(port):
+def http_peer_id_format(port, server):
     http_allowed(port, announce_target(PEER_ALLOWED), "http peer id: standard id")
     http_allowed(port, announce_target(PEER_UTORRENT),
                  "http peer id: real uTorrent version")
@@ -775,9 +778,12 @@ def http_peer_id_format(port):
                  "http peer id: non-standard rejected")
     http_blocked(port, announce_target(PEER_FAKE_VERSION), "Unsupported client",
                  "http peer id: fake version rejected")
+    time.sleep(0.5)
+    check("client rejected:" in server.log_tail(lines=200),
+          "http peer id: rejection logged")
 
 
-def http_peer_id_ua(port):
+def http_peer_id_ua(port, server):
     http_allowed(port, announce_target(PEER_ALLOWED),
                  "http peer id ua: matching client")
     http_blocked(port, announce_target(PEER_TRANSMISSION),
@@ -791,6 +797,11 @@ def http_peer_id_ua(port):
     http_allowed(port, announce_target(PEER_WEBTORRENT),
                  "http peer id ua: browser UA skipped",
                  user_agent="Mozilla/5.0")
+    time.sleep(0.5)
+    check("client rejected:" in server.log_tail(lines=200),
+          "http peer id ua: rejection logged")
+    check("User-Agent claims qBittorrent" in server.log_tail(lines=200),
+          "http peer id ua: mismatch detail logged")
 
 
 def http_peer_id_warn(port, server):
@@ -980,20 +991,26 @@ def ws_handshake_filters(port):
     ws_allowed(port, PEER_ALLOWED, "ws handshake filters: normal client allowed")
 
 
-def ws_peer_id_format(port):
+def ws_peer_id_format(port, server):
     ws_allowed(port, PEER_ALLOWED, "ws peer id: standard id")
     ws_allowed(port, PEER_UTORRENT, "ws peer id: real uTorrent version")
     ws_blocked(port, PEER_NONSTANDARD, "ws peer id: non-standard rejected")
     ws_blocked(port, PEER_FAKE_VERSION, "ws peer id: fake version rejected")
+    time.sleep(0.5)
+    check("client rejected:" in server.log_tail(lines=200),
+          "ws peer id: rejection logged")
 
 
-def ws_peer_id_ua(port):
+def ws_peer_id_ua(port, server):
     ws_allowed(port, PEER_ALLOWED, "ws peer id ua: matching client")
     ws_blocked(port, PEER_TRANSMISSION, "ws peer id ua: mismatched family")
     ws_allowed(port, PEER_TRANSMISSION, "ws peer id ua: matching family",
                user_agent="Transmission/4.0.2")
     ws_allowed(port, PEER_WEBTORRENT, "ws peer id ua: browser UA skipped",
                user_agent="Mozilla/5.0")
+    time.sleep(0.5)
+    check("client rejected:" in server.log_tail(lines=200),
+          "ws peer id ua: rejection logged")
 
 
 def ws_peer_id_warn(port, server):
@@ -1104,7 +1121,7 @@ def build_scenarios():
         scenario("udp_peer_id_format", "udp", 18111,
                  lambda d, p: (list_files(d),
                                udp_config(d, p, peer_id_strictness="enforce")),
-                 lambda s, d: udp_peer_id_format(s.port)),
+                 lambda s, d: udp_peer_id_format(s.port, s)),
         scenario("udp_peer_id_warn", "udp", 18112,
                  lambda d, p: (list_files(d),
                                udp_config(d, p, peer_id_strictness="warn")),
@@ -1163,11 +1180,11 @@ def build_scenarios():
         scenario("http_peer_id_format", "http", 18212,
                  lambda d, p: (list_files(d),
                                http_config(d, p, peer_id_strictness="enforce")),
-                 lambda s, d: http_peer_id_format(s.port)),
+                 lambda s, d: http_peer_id_format(s.port, s)),
         scenario("http_peer_id_ua", "http", 18213,
                  lambda d, p: (list_files(d),
                                http_config(d, p, peer_id_ua_mismatch="enforce")),
-                 lambda s, d: http_peer_id_ua(s.port)),
+                 lambda s, d: http_peer_id_ua(s.port, s)),
         scenario("http_peer_id_warn", "http", 18214,
                  lambda d, p: (list_files(d),
                                http_config(d, p, peer_id_strictness="warn")),
@@ -1232,11 +1249,11 @@ def build_scenarios():
         scenario("ws_peer_id_format", "ws", 18312,
                  lambda d, p: (list_files(d),
                                ws_config(d, p, peer_id_strictness="enforce")),
-                 lambda s, d: ws_peer_id_format(s.port)),
+                 lambda s, d: ws_peer_id_format(s.port, s)),
         scenario("ws_peer_id_ua", "ws", 18313,
                  lambda d, p: (list_files(d),
                                ws_config(d, p, peer_id_ua_mismatch="enforce")),
-                 lambda s, d: ws_peer_id_ua(s.port)),
+                 lambda s, d: ws_peer_id_ua(s.port, s)),
         scenario("ws_peer_id_warn", "ws", 18314,
                  lambda d, p: (list_files(d),
                                ws_config(d, p, peer_id_strictness="warn")),

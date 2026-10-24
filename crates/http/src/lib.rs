@@ -2,7 +2,7 @@ use anyhow::Context;
 use aquatic_common::{
     access_list::update_access_list,
     ip_ban::update_ip_ban_list,
-    client_ban::update_client_ban_list,
+    client_ban::{update_client_ban_list, warn_about_identity_enforce_with_auto_ban},
     client_whitelist::update_client_whitelist,
     trusted_proxies::update_trusted_proxies,
     privileges::PrivilegeDropper,
@@ -136,6 +136,7 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     update_access_list(&config.access_list, &state.access_list)?;
     update_ip_ban_list(&config.ip_ban, &state.ip_ban_list)?;
     update_client_ban_list(&config.client_ban, &state.client_ban_list)?;
+    warn_about_identity_enforce_with_auto_ban(&config.client_ban, &config.auto_ban);
     update_client_whitelist(&config.client_whitelist, &state.client_whitelist)?;
     update_trusted_proxies(&config.trusted_proxies, &state.trusted_proxies)?;
 

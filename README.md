@@ -170,12 +170,17 @@ peer_id_allowlist_path = ""
   识别为 BT 客户端时跳过，因此浏览器里的 WebTorrent 不会被误判。
 - 两者都支持 `off`（不检查）、`warn`（只写日志，每分钟最多一条，并累加
   `aquatic_client_identity_checks_total` 指标）、`enforce`（拒绝 announce；
-  启用自动封禁时同时计为违规）。
+  启用自动封禁时同时计为违规）。`enforce` 的拒绝同样限频写入 warn 日志
+  （`client rejected: ...`），不会被日志级别淹没。
 - `peer_id_allowlist_path` 指向一个每行一个 peer_id 前缀的文件，命中的
-  peer_id 会跳过 `peer_id_strictness`。建议先用 `warn` 观察一段时间，确认
-  没有误判后再切换为 `enforce`。
+  peer_id 会**同时跳过两项检测**（`peer_id_strictness` 与
+  `peer_id_user_agent_mismatch`），是误判的豁免通道。建议先用 `warn`
+  观察一段时间，确认没有误判后再切换为 `enforce`。
 - 这两项检测与 `mode` 解耦：即使 `mode = "off"`，只要对应选项不是 `off`
   就会执行。
+- 如果同时启用了 `[auto_ban]`，服务启动时会打印警告：`enforce` 下的每次
+  拒绝都会计入自动封禁违规，一次误判可能与阈值叠加，在 `window_secs` 内
+  形成永久封禁。确认误判不会发生后再组合使用。
 
 > 不要用 `-ut0` ~ `-ut9` 这样的前缀封禁“伪造版本号”：Azureus peer_id 的
 > 第 4 个字符是版本首位，列出 0–9 等于封禁全部 uTorrent（`-tx*`、`-bc*`

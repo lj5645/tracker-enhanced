@@ -43,6 +43,7 @@ ban_vampire_clients = true
 peer_id_strictness = "off"
 
 # 额外放行的 peer_id 前缀文件，每行一个前缀（留空表示不使用）
+# 命中的 peer_id 会跳过上面的结构校验
 peer_id_allowlist_path = ""
 
 [client_whitelist]
