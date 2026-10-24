@@ -503,38 +503,34 @@ impl<I: Ip> LargePeerMap<I> {
             self.peers.keys().copied().collect()
         } else {
             let middle_index = self.peers.len() / 2;
-            // Take one extra peer per half so that odd limits (including a
-            // request for a single peer) still fill the response. Without the
-            // extra peer, `max / 2 == 0` for `max == 1` and the client would
-            // receive an empty peer list even though peers are available.
-            let num_to_take_per_half = (max_num_peers_to_take / 2) + 1;
+            // Split the limit between the halves, giving the odd peer to the
+            // first one. Taking `max / 2` from each half returned no peers at
+            // all for `max == 1` and one too few for odd limits. Each half is
+            // sampled within its own bounds so that the ranges never overlap
+            // (which would return duplicate peers).
+            let num_to_take_half_one = (max_num_peers_to_take + 1) / 2;
+            let num_to_take_half_two = max_num_peers_to_take / 2;
 
-            let offset_half_one = {
-                let from = 0;
-                let to = usize::max(1, middle_index - num_to_take_per_half);
+            let offset_half_one = rng.gen_range(0..=(middle_index - num_to_take_half_one));
+            let end_half_one = offset_half_one + num_to_take_half_one;
 
-                rng.gen_range(from..to)
-            };
-            let offset_half_two = {
-                let from = middle_index;
-                let to = usize::max(middle_index + 1, self.peers.len() - num_to_take_per_half);
-
-                rng.gen_range(from..to)
-            };
-
-            let end_half_one = offset_half_one + num_to_take_per_half;
-            let end_half_two = offset_half_two + num_to_take_per_half;
-
-            let mut peers = Vec::with_capacity(max_num_peers_to_take + 2);
+            let mut peers = Vec::with_capacity(max_num_peers_to_take);
 
             if let Some(slice) = self.peers.get_range(offset_half_one..end_half_one) {
                 peers.extend(slice.keys());
             }
-            if let Some(slice) = self.peers.get_range(offset_half_two..end_half_two) {
-                peers.extend(slice.keys());
-            }
 
-            peers.truncate(max_num_peers_to_take);
+            if num_to_take_half_two > 0 {
+                let max_offset_half_two =
+                    self.peers.len() - middle_index - num_to_take_half_two;
+                let offset_half_two =
+                    middle_index + rng.gen_range(0..=max_offset_half_two);
+                let end_half_two = offset_half_two + num_to_take_half_two;
+
+                if let Some(slice) = self.peers.get_range(offset_half_two..end_half_two) {
+                    peers.extend(slice.keys());
+                }
+            }
 
             peers
         }
@@ -599,9 +595,7 @@ mod tests {
     use rand::prelude::SmallRng;
     use rand::SeedableRng;
 
-    #[test]
-    fn test_large_peer_map_returns_requested_number_of_peers() {
-        let mut rng = SmallRng::seed_from_u64(42);
+    fn peer_map(num_peers: u8) -> LargePeerMap<Ipv4Addr> {
         let mut peers = LargePeerMap::<Ipv4Addr> {
             peers: IndexMap::default(),
             num_seeders: 0,
@@ -609,7 +603,7 @@ mod tests {
         };
         let valid_until = ValidUntil::new(ServerStartInstant::new(), 3600);
 
-        for i in 0..10u8 {
+        for i in 0..num_peers {
             peers.insert(
                 ResponsePeer {
                     ip_address: Ipv4Addr::new(127, 0, 0, i),
@@ -622,15 +616,39 @@ mod tests {
             );
         }
 
+        peers
+    }
+
+    #[test]
+    fn test_large_peer_map_returns_requested_number_of_peers() {
+        let mut rng = SmallRng::seed_from_u64(42);
+
         // A request for a single peer used to return an empty list because
         // `max / 2` is zero.
         for max in 1..=4 {
             assert_eq!(
-                peers.extract_response_peers(&mut rng, max).len(),
+                peer_map(10).extract_response_peers(&mut rng, max).len(),
                 max,
                 "wrong number of peers for max {}",
                 max
             );
+        }
+    }
+
+    #[test]
+    fn test_large_peer_map_does_not_return_duplicate_peers() {
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        // `max` close to the map length used to make the two sampling ranges
+        // overlap, so the same peer could appear twice.
+        for num_peers in 5..=12u8 {
+            for max in 1..num_peers {
+                let extracted = peer_map(num_peers).extract_response_peers(&mut rng, max as usize);
+                let unique = extracted.iter().collect::<std::collections::HashSet<_>>();
+
+                assert_eq!(extracted.len(), max as usize);
+                assert_eq!(unique.len(), extracted.len(), "duplicate peer for max {}", max);
+            }
         }
     }
 }

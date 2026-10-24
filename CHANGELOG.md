@@ -4,12 +4,12 @@
 
 ### 修复
 
-- **UDP / HTTP 返回的 peer 数量少于请求值**：`LargePeerMap` 在做随机取样时把每半区的数量算成 `numwant / 2`，导致 `numwant=1` 时返回空列表、奇数 `numwant` 时少返回一个 peer。现在每个半区多取一个再截断到 `numwant`
+- **UDP / HTTP 返回的 peer 数量少于请求值**：`LargePeerMap` 在做随机取样时把每半区的数量算成 `numwant / 2`，导致 `numwant=1` 时返回空列表、奇数 `numwant` 时少返回一个 peer。现在奇数多出的一个分配给前半区，两段取样各自限制在所属半区内，返回数量等于 `numwant` 且不会出现重复 peer（`numwant` 接近 swarm 大小时原先两段范围会重叠）
 - **HTTP 拒绝 `numwant=-1`**：部分客户端沿用 UDP 约定用 `-1` 表示“使用 tracker 默认值”，HTTP 侧之前会整条 announce 报错。现在负值按“无偏好”处理，即回落到 `max_peers`
 
 ### 测试
 
-- 新增 HTTP / UDP `extract_response_peers` 的单元测试，覆盖 `numwant` 为 1 至 4 的返回数量
+- 新增 HTTP / UDP `extract_response_peers` 的单元测试，覆盖 `numwant` 为 1 至 4 的返回数量，以及 `numwant` 接近 swarm 大小时不返回重复 peer
 
 ## v1.5.4
 
