@@ -1,12 +1,13 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aquatic_toml_config::TomlConfig;
 use arc_swap::{ArcSwap, Cache};
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
+
+use crate::list_file::read_list_file;
+use crate::contains_ascii_case_insensitive;
 
 #[derive(Clone, Copy, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,21 +56,13 @@ pub struct ClientWhitelist {
 }
 
 impl ClientWhitelist {
-    pub fn create_from_path(path: &PathBuf) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
+    pub fn create_from_path(path: &Path) -> anyhow::Result<Self> {
         let mut list = Self::default();
 
-        for line in reader.lines() {
-            let line = line?;
-            let line = line.trim();
-
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let line = line.to_lowercase();
+        for (_, line) in read_list_file(path)? {
+            // Patterns are matched case-insensitively with ASCII semantics, so
+            // lowercasing once at load time avoids an allocation per request.
+            let line = line.to_ascii_lowercase();
 
             if line.starts_with('-') {
                 list.peer_id_prefixes.insert(line);
@@ -120,19 +113,17 @@ impl ClientWhitelist {
     }
 
     pub fn matches_user_agent(&self, user_agent: &str) -> bool {
-        let user_agent_lower = user_agent.to_lowercase();
-
         self.user_agent_patterns
             .iter()
-            .any(|pattern| user_agent_lower.contains(pattern))
+            .any(|pattern| contains_ascii_case_insensitive(user_agent, pattern))
     }
 
     pub fn matches_peer_id(&self, peer_id: &str) -> bool {
-        let peer_id_lower = peer_id.to_lowercase();
-
-        self.peer_id_prefixes
-            .iter()
-            .any(|prefix| peer_id_lower.starts_with(prefix))
+        self.peer_id_prefixes.iter().any(|prefix| {
+            peer_id
+                .get(..prefix.len())
+                .map_or(false, |start| start.eq_ignore_ascii_case(prefix))
+        })
     }
 
     /// Protocol-neutral check used by HTTP, UDP and WebSocket.
@@ -306,5 +297,30 @@ mod tests {
         assert!(!list.allows(None, None));
         // A peer_id does not satisfy a User-Agent-only whitelist.
         assert!(!list.allows(Some("-TR1234-abc"), None));
+    }
+
+    #[test]
+    fn test_load_tolerates_bom_comments_and_non_utf8() {
+        let path = std::env::temp_dir().join("aquatic_client_whitelist_formats_test.txt");
+        std::fs::write(
+            &path,
+            b"\xef\xbb\xbf-uT # uTorrent, CRLF below\r\nqBittorrent\r\n\xc9\xa8\xc3\xe8\r\n",
+        )
+        .unwrap();
+
+        let list = ClientWhitelist::create_from_path(&path).unwrap();
+
+        assert!(list.matches_peer_id("-UT1234-abc"));
+        assert!(list.matches_user_agent("qBittorrent/5.0"));
+        assert!(!list.matches_user_agent("curl/8.0"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_ascii_case_insensitive_search() {
+        assert!(contains_ascii_case_insensitive("qBittorrent/5.0", "qbittorrent"));
+        assert!(contains_ascii_case_insensitive("abc", ""));
+        assert!(!contains_ascii_case_insensitive("ab", "abc"));
     }
 }

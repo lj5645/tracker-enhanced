@@ -496,19 +496,21 @@ impl SocketWorker {
         None
     }
 
-    /// Returns true if the request should be blocked
-    fn run_security_checks(&mut self, src: &CanonicalSocketAddr, peer_id_opt: Option<&PeerId>) -> bool {
+    /// Checks that only consult ban lists and never count violations.
+    ///
+    /// They are run before connection-id validation because they are cheap and
+    /// because a listed IP should not even receive a connection id. They must
+    /// not record auto-ban violations: UDP source addresses are trivially
+    /// spoofable, so counting these would let anyone get an arbitrary victim
+    /// auto-banned.
+    fn is_list_banned(&self, src: &CanonicalSocketAddr) -> bool {
         let peer_ip = src.get().ip();
 
-        // 1. IP ban check
-        if self.config.ip_ban.mode.is_on() {
-            if self.ip_ban_list_cache.load().is_banned(&peer_ip) {
-                ::log::debug!("IP banned: {}", peer_ip);
-                return true;
-            }
+        if self.config.ip_ban.mode.is_on() && self.ip_ban_list_cache.load().is_banned(&peer_ip) {
+            ::log::debug!("IP banned: {}", peer_ip);
+            return true;
         }
 
-        // 2. Auto-ban check
         if let Some(tracker) = &self.shared_state.auto_ban_tracker {
             if tracker.is_auto_banned(&peer_ip) {
                 ::log::debug!("Auto-banned IP: {}", peer_ip);
@@ -516,45 +518,78 @@ impl SocketWorker {
             }
         }
 
-        // 3. Private IP filter
-        if self.config.request_filter.filter_private_ips && !self.request_filter.is_ip_allowed(&peer_ip) {
+        false
+    }
+
+    fn is_private_ip_blocked(&self, src: &CanonicalSocketAddr) -> bool {
+        let peer_ip = src.get().ip();
+
+        if self.config.request_filter.filter_private_ips && !self.request_filter.is_ip_allowed(&peer_ip)
+        {
             ::log::debug!("Private IP filtered: {}", peer_ip);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the request should be blocked.
+    ///
+    /// Only call this after validating the connection id: these checks record
+    /// auto-ban violations, and doing so for unvalidated packets would let a
+    /// spoofed source IP get someone else banned.
+    fn run_security_checks(
+        &mut self,
+        src: &CanonicalSocketAddr,
+        peer_id_opt: Option<&PeerId>,
+    ) -> bool {
+        let peer_ip = src.get().ip();
+
+        // Private IP filter
+        if self.is_private_ip_blocked(src) {
             if let Some(tracker) = &self.shared_state.auto_ban_tracker {
                 tracker.record_violation(&peer_ip, AutoBanReason::PrivateIp);
             }
             return true;
         }
 
-        // 4. Client ban check (for announce requests with peer_id)
-        if let Some(peer_id) = peer_id_opt {
-            let peer_id_str = String::from_utf8_lossy(&peer_id.0);
+        let check_client_ban = self.config.client_ban.mode.is_on();
+        let check_whitelist = self.config.client_whitelist.mode.is_on();
 
-            if self.config.client_ban.mode.is_on() {
-                if self.client_ban_list_cache.load().is_banned(&peer_id_str) {
-                    ::log::debug!("Client banned: {}", peer_id_str);
-                    if let Some(tracker) = &self.shared_state.auto_ban_tracker {
-                        tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
-                    }
-                    return true;
-                }
-            }
-
-            // 5. Client whitelist check
-            if self.config.client_whitelist.mode.is_on() {
-                if !self
-                    .client_whitelist_cache
-                    .load()
-                    .allows(Some(&peer_id_str), None)
-                {
-                    ::log::debug!("Client not whitelisted: {}", peer_id_str);
-                    if let Some(tracker) = &self.shared_state.auto_ban_tracker {
-                        tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
-                    }
-                    return true;
-                }
-            }
+        if !check_client_ban && !check_whitelist {
+            return false;
         }
 
+        let peer_id = match peer_id_opt {
+            Some(peer_id) => peer_id,
+            None => return false,
+        };
+        let peer_id_str = String::from_utf8_lossy(&peer_id.0);
+
+        // Client ban check
+        if check_client_ban && self.client_ban_list_cache.load().is_banned(&peer_id_str) {
+            ::log::debug!("Client banned: {}", peer_id_str);
+            if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
+            }
+            return true;
+        }
+
+        // Client whitelist check
+        if check_whitelist
+            && !self
+                .client_whitelist_cache
+                .load()
+                .allows(Some(&peer_id_str), None)
+        {
+            ::log::debug!("Client not whitelisted: {}", peer_id_str);
+            if let Some(tracker) = &self.shared_state.auto_ban_tracker {
+                tracker.record_violation(&peer_ip, AutoBanReason::NotWhitelisted);
+            }
+            return true;
+        }
+
+        // All checks passed
         false
     }
 
@@ -565,10 +600,18 @@ impl SocketWorker {
     ) -> Option<(CanonicalSocketAddr, Response)> {
         let access_list_mode = self.config.access_list.mode;
 
+        // Ban lists are checked first so listed IPs never receive a connection
+        // id. These checks do not record violations (see `is_list_banned`).
+        if self.is_list_banned(&src) {
+            return None;
+        }
+
         match request {
             Request::Connect(request) => {
-                // Run security checks (no peer_id for connect)
-                if self.run_security_checks(&src, None) {
+                // A Connect has no peer id, so the private-IP filter is
+                // applied without counting a violation: the packet can be
+                // spoofed and must not get an arbitrary IP auto-banned.
+                if self.is_private_ip_blocked(&src) {
                     return None;
                 }
 
@@ -580,65 +623,66 @@ impl SocketWorker {
                 return Some((src, response));
             }
             Request::Announce(request) => {
-                // Run security checks with peer_id
+                if !self
+                    .validator
+                    .connection_id_valid(src, request.connection_id)
+                {
+                    return None;
+                }
+
+                // Violation-recording checks run only for validated packets.
                 if self.run_security_checks(&src, Some(&request.peer_id)) {
                     return None;
                 }
 
                 if self
-                    .validator
-                    .connection_id_valid(src, request.connection_id)
+                    .access_list_cache
+                    .load()
+                    .allows(access_list_mode, &request.info_hash.0)
                 {
-                    if self
-                        .access_list_cache
-                        .load()
-                        .allows(access_list_mode, &request.info_hash.0)
-                    {
-                        let response = self.shared_state.torrent_maps.announce(
-                            &self.config,
-                            &self.statistics_sender,
-                            &mut self.rng,
-                            &request,
-                            src,
-                            self.peer_valid_until,
-                        );
+                    let response = self.shared_state.torrent_maps.announce(
+                        &self.config,
+                        &self.statistics_sender,
+                        &mut self.rng,
+                        &request,
+                        src,
+                        self.peer_valid_until,
+                    );
 
-                        return Some((src, response));
-                    } else {
-                        let response = Response::Error(ErrorResponse {
-                            transaction_id: request.transaction_id,
-                            message: "Info hash not allowed".into(),
-                        });
-
-                        return Some((src, response));
-                    }
-                }
-            }
-            Request::Scrape(request) => {
-                // Run security checks (no peer_id for scrape)
-                if self.run_security_checks(&src, None) {
-                    return None;
-                }
-
-                if self
-                    .validator
-                    .connection_id_valid(src, request.connection_id)
-                {
-                    let filtered_request = request.filter_info_hashes(|info_hash| {
-                        self.access_list_cache
-                            .load()
-                            .allows(access_list_mode, &info_hash.0)
+                    return Some((src, response));
+                } else {
+                    let response = Response::Error(ErrorResponse {
+                        transaction_id: request.transaction_id,
+                        message: "Info hash not allowed".into(),
                     });
-                    
-                    let response =
-                        Response::Scrape(self.shared_state.torrent_maps.scrape(filtered_request, src));
 
                     return Some((src, response));
                 }
             }
-        }
+            Request::Scrape(request) => {
+                if !self
+                    .validator
+                    .connection_id_valid(src, request.connection_id)
+                {
+                    return None;
+                }
 
-        None
+                if self.run_security_checks(&src, None) {
+                    return None;
+                }
+
+                let filtered_request = request.filter_info_hashes(|info_hash| {
+                    self.access_list_cache
+                        .load()
+                        .allows(access_list_mode, &info_hash.0)
+                });
+
+                let response =
+                    Response::Scrape(self.shared_state.torrent_maps.scrape(filtered_request, src));
+
+                return Some((src, response));
+            }
+        }
     }
 }
 

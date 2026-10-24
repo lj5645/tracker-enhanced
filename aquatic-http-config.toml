@@ -52,6 +52,8 @@ keep_alive = true
 
 # 是否运行在反向代理后面
 # 如果使用 nginx/apache 等反向代理，设置为 true
+# 注意：设置为 true 时必须同时启用 [trusted_proxies]，否则任何客户端都能
+# 伪造 X-Forwarded-For 来决定自己被记录/封禁用的 IP，程序会拒绝启动。
 runs_behind_reverse_proxy = false
 
 # 反向代理传递真实 IP 的头部名称
@@ -92,6 +94,24 @@ tcp_keepalive_interval_secs = 10
 tcp_keepalive_probes = 3
 
 # ============================================================
+# 受信反向代理配置
+# ============================================================
+
+[trusted_proxies]
+# 是否启用受信代理校验
+# 启用后只有当连接来自列表中的代理 IP 时，才会使用 X-Forwarded-For 等头部
+# 决定客户端真实 IP；其他来源的该头部会被忽略，防止 IP 伪造。
+# 启用时必须提供非空的代理列表，否则程序拒绝启动。
+enabled = false
+
+# 受信代理列表文件路径，一行一个 IP 或 CIDR，以 # 开头为注释
+# 示例:
+#   127.0.0.1/32          # 本机 nginx
+#   10.0.0.0/8            # 内网代理
+#   2001:db8::/32         # IPv6 代理
+path = "./trusted-proxies.txt"
+
+# ============================================================
 # 协议配置
 # ============================================================
 
@@ -127,18 +147,25 @@ max_connection_idle = 180
 # ============================================================
 
 [privileges]
-# 启动后降权到的用户（留空表示不降权）
-user = ""
+# 绑定 socket 后是否 chroot 并切换到下面的用户/组
+# 设为 false 时 user/group/chroot_path 均不生效
+drop_privileges = false
 
-# 启动后降权到的用户组（留空表示不降权）
-group = ""
+# chroot 到的目录
+chroot_path = "."
+
+# 启动后降权到的用户
+user = "nobody"
+
+# 启动后降权到的用户组
+group = "nogroup"
 
 # ============================================================
 # 访问列表配置（种子白名单/黑名单）
 # ============================================================
 
 [access_list]
-# 模式: on, off
+# 模式: allow（只服务列表中的 info_hash）、deny（拒绝列表中的 info_hash）、off
 mode = "off"
 
 # 访问列表文件路径
@@ -169,6 +196,10 @@ path = "./ip-ban-list.txt"
 # 模式: on, off
 # 开启后将封禁吸血客户端和自定义封禁列表中的客户端
 mode = "on"
+
+# 是否封禁内置的吸血客户端前缀（-xl、-sd、-qd、-bn、-bc 等）
+# 设为 false 时只使用下方列表文件中的规则
+ban_vampire_clients = true
 
 # 客户端封禁列表文件路径
 # 文件格式: 每行一个 peer_id 前缀模式，以 # 开头为注释
@@ -217,16 +248,17 @@ filter_path_traversal = true
 
 # 过滤爬虫和扫描器
 # 检测 User-Agent 中的: bot, crawler, spider, curl, wget, python-requests 等
-filter_crawlers = true
+# 注意：部分正常工具/客户端的 User-Agent 也可能包含这些词，开启前请确认
+filter_crawlers = false
 
 # 过滤私有 IP 地址
 # 阻止来自私有 IP 的请求: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 等
 filter_private_ips = false
 
 # 过滤缺少 User-Agent 的请求
-# 大多数合法的 BitTorrent 客户端都会发送 User-Agent
-# 开启此选项可以阻止扫描器和恶意工具
-filter_missing_user_agent = true
+# 大多数合法的 BitTorrent 客户端都会发送 User-Agent，但部分脚本/健康检查
+# 不会发送。默认关闭，确认监控不会因此被拦截后再开启。
+filter_missing_user_agent = false
 
 # ============================================================
 # CPU 绑定配置（需要编译时启用 cpu-pinning feature 和 hwloc）
@@ -253,7 +285,11 @@ core_offset = 0
 # 启用后，IP 在时间窗口内非法请求次数达到阈值时会被自动封禁
 # 只有启用对应的 [request_filter] / [client_ban] / [client_whitelist] 检查时，
 # 相应违规才会计数。已被 IP 封禁的请求直接拒绝，不重复计数。
-enabled = true
+#
+# 警告：默认关闭。自动封禁会依据各类过滤器计数，若过滤器误判（例如把
+# 正常客户端识别为爬虫），大量正常用户会在几分钟内被永久封禁。请先观察
+# 日志中的过滤记录、确认过滤器配置无误后再开启。
+enabled = false
 
 # 非法请求次数阈值（达到此数量后自动封禁）
 threshold = 10
@@ -284,7 +320,8 @@ flush_interval_secs = 60
 run_prometheus_endpoint = true
 
 # Prometheus 端点地址
-prometheus_endpoint_address = "0.0.0.0:9000"
+# 默认只监听本机。指标端点没有认证，如需远程抓取请通过防火墙或反向代理限制来源。
+prometheus_endpoint_address = "127.0.0.1:9000"
 
 # Torrent 数量更新间隔（秒）
 torrent_count_update_interval = 300

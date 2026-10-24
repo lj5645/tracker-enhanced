@@ -3,12 +3,12 @@ pub mod config;
 pub mod swarm;
 pub mod workers;
 
-use std::thread::{available_parallelism, sleep, Builder, JoinHandle};
+use std::thread::{sleep, Builder, JoinHandle};
 use std::time::Duration;
 use std::sync::Arc;
 
 use anyhow::Context;
-use aquatic_common::WorkerType;
+use aquatic_common::{validate_interval, validate_worker_counts, WorkerType};
 use crossbeam_channel::unbounded;
 #[cfg(unix)]
 use signal_hook::consts::SIGUSR1;
@@ -41,9 +41,51 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
         ));
     }
 
-    if config.socket_workers == 0 {
-        config.socket_workers = available_parallelism().map(Into::into).unwrap_or(1);
-    };
+    validate_worker_counts(&mut config.socket_workers, None)?;
+
+    validate_interval(
+        "cleaning.torrent_cleaning_interval",
+        config.cleaning.torrent_cleaning_interval,
+    )?;
+
+    // Responses are encoded into a fixed socket buffer. Reject a peer/scrape
+    // count that cannot fit instead of erroring per request (the encoder fails
+    // and the response is simply not sent).
+    //
+    // Compact peers are 6 bytes for IPv4 and 18 bytes for IPv6, so the worst
+    // case is 18 bytes per peer plus the 20-byte fixed announce response.
+    let max_announce_response_len = config
+        .protocol
+        .max_response_peers
+        .saturating_mul(18)
+        .saturating_add(20);
+    let max_scrape_response_len = (config.protocol.max_scrape_torrents as usize)
+        .saturating_mul(12)
+        .saturating_add(8);
+
+    // Leave room for protocol headers and short error messages.
+    let max_allowed_response_len = crate::common::BUFFER_SIZE - 64;
+
+    if max_announce_response_len > max_allowed_response_len {
+        return Err(anyhow::anyhow!(
+            "protocol.max_response_peers = {} produces announce responses of up to {} bytes, \
+             which do not fit in the {}-byte socket buffer; reduce it to at most {}",
+            config.protocol.max_response_peers,
+            max_announce_response_len,
+            crate::common::BUFFER_SIZE,
+            max_allowed_response_len.saturating_sub(20) / 18,
+        ));
+    }
+
+    if max_scrape_response_len > max_allowed_response_len {
+        return Err(anyhow::anyhow!(
+            "protocol.max_scrape_torrents = {} produces scrape responses of up to {} bytes, \
+             which do not fit in the {}-byte socket buffer",
+            config.protocol.max_scrape_torrents,
+            max_scrape_response_len,
+            crate::common::BUFFER_SIZE,
+        ));
+    }
 
     let num_sockets_per_worker =
         if config.network.use_ipv4 { 1 } else { 0 } + if config.network.use_ipv6 { 1 } else { 0 };
@@ -133,6 +175,12 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
 
                     // Always cleanup expired entries
                     tracker.cleanup();
+
+                    ::log::debug!(
+                        "auto-ban: {} IPs tracked, {} currently banned",
+                        tracker.tracked_count(),
+                        tracker.banned_count(),
+                    );
                 }
 
                 #[allow(unreachable_code)]

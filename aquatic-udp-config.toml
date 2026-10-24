@@ -32,6 +32,9 @@ path = "./ip-ban-list.txt"
 [client_ban]
 mode = "on"
 path = "./client-ban-list.txt"
+# 是否同时封禁内置的吸血客户端前缀（-xl、-sd、-qd、-bn、-bc 等）
+# 设为 false 时只使用列表文件中的规则
+ban_vampire_clients = true
 
 [client_whitelist]
 # UDP 没有 User-Agent，启用时白名单文件必须包含 peer_id 前缀

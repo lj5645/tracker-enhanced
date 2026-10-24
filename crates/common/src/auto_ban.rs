@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -57,7 +57,6 @@ impl Default for AutoBanConfig {
 /// Reason why an IP was flagged for auto-ban
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoBanReason {
-    IpBanned,
     SqlInjection,
     PathTraversal,
     Crawler,
@@ -70,7 +69,6 @@ pub enum AutoBanReason {
 impl AutoBanReason {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::IpBanned => "ip_banned",
             Self::SqlInjection => "sql_injection",
             Self::PathTraversal => "path_traversal",
             Self::Crawler => "crawler",
@@ -86,11 +84,50 @@ impl AutoBanReason {
 struct IpRecord {
     count: u32,
     first_violation: Instant,
-    /// Some(instant) if currently banned, None if just counting
+    /// Some(instant) for a temporary ban, None otherwise
     banned_until: Option<Instant>,
+    /// Permanent bans (`ban_duration_secs == 0`) have no expiration instant.
+    /// Tracking this explicitly avoids representing "permanent" as an
+    /// arbitrary far-future instant.
+    permanent: bool,
     /// Whether this ban has already been appended to the ban list file.
     /// Prevents unbounded duplicate lines when a reload keeps failing.
     persisted: bool,
+}
+
+impl IpRecord {
+    fn is_banned(&self, now: Instant) -> bool {
+        self.permanent || self.banned_until.map_or(false, |until| now < until)
+    }
+}
+
+/// Whether a list file already ends with a newline.
+///
+/// Bans are appended with `OpenOptions::append`; without this check a file
+/// whose last line lacked a terminating newline would get the first appended
+/// ban glued to it, silently corrupting that entry.
+fn file_ends_with_newline(path: &Path) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return true,
+    };
+
+    if metadata.len() == 0 {
+        return true;
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    if file.seek(SeekFrom::End(-1)).is_err() {
+        return false;
+    }
+
+    let mut byte = [0u8; 1];
+
+    file.read_exact(&mut byte).is_ok() && byte[0] == b'\n'
 }
 
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
@@ -129,10 +166,8 @@ impl AutoBanTracker {
 
         // Check if already banned
         if let Some(record) = inner.records.get(ip) {
-            if let Some(banned_until) = record.banned_until {
-                if now < banned_until {
-                    return false; // Already banned
-                }
+            if record.is_banned(now) {
+                return false; // Already banned
             }
         }
 
@@ -144,8 +179,8 @@ impl AutoBanTracker {
         // Cleanup if too many records
         if inner.records.len() >= max_records {
             inner.records.retain(|_, record| {
-                if let Some(banned_until) = record.banned_until {
-                    now < banned_until
+                if record.is_banned(now) {
+                    true
                 } else {
                     now.duration_since(record.first_violation).as_secs() < window_secs
                 }
@@ -160,22 +195,31 @@ impl AutoBanTracker {
                     record.first_violation = now;
                 }
 
-                // Clear expired ban
-                if let Some(banned_until) = record.banned_until {
-                    if now >= banned_until {
-                        record.banned_until = None;
-                        record.persisted = false;
+                // Clear expired ban. Resetting the count as well means a single
+                // new violation after the ban expires does not immediately
+                // re-ban the IP.
+                if !record.permanent {
+                    if let Some(banned_until) = record.banned_until {
+                        if now >= banned_until {
+                            record.banned_until = None;
+                            record.persisted = false;
+                            record.count = 0;
+                            record.first_violation = now;
+                        }
                     }
                 }
 
                 record.count += 1;
 
-                if record.count >= threshold && record.banned_until.is_none() {
-                    record.banned_until = if ban_duration_secs > 0 {
-                        Some(now + std::time::Duration::from_secs(ban_duration_secs))
+                if record.count >= threshold && !record.is_banned(now) {
+                    if ban_duration_secs > 0 {
+                        record.banned_until =
+                            Some(now + std::time::Duration::from_secs(ban_duration_secs));
+                        record.permanent = false;
                     } else {
-                        Some(now + std::time::Duration::from_secs(365 * 24 * 3600))
-                    };
+                        record.banned_until = None;
+                        record.permanent = true;
+                    }
                     record.persisted = false;
                     true
                 } else {
@@ -184,20 +228,26 @@ impl AutoBanTracker {
             }
             None => {
                 let should = threshold <= 1;
+                let (banned_until, permanent) = if should {
+                    if ban_duration_secs > 0 {
+                        (
+                            Some(now + std::time::Duration::from_secs(ban_duration_secs)),
+                            false,
+                        )
+                    } else {
+                        (None, true)
+                    }
+                } else {
+                    (None, false)
+                };
+
                 inner.records.insert(
                     *ip,
                     IpRecord {
                         count: 1,
                         first_violation: now,
-                        banned_until: if should {
-                            if ban_duration_secs > 0 {
-                                Some(now + std::time::Duration::from_secs(ban_duration_secs))
-                            } else {
-                                Some(now + std::time::Duration::from_secs(365 * 24 * 3600))
-                            }
-                        } else {
-                            None
-                        },
+                        banned_until,
+                        permanent,
                         persisted: false,
                     },
                 );
@@ -224,9 +274,7 @@ impl AutoBanTracker {
         let now = Instant::now();
 
         if let Some(record) = inner.records.get(ip) {
-            if let Some(banned_until) = record.banned_until {
-                return now < banned_until;
-            }
+            return record.is_banned(now);
         }
 
         false
@@ -253,7 +301,7 @@ impl AutoBanTracker {
             let mut pending_write = Vec::new();
 
             for (ip, record) in inner.records.iter() {
-                if record.banned_until.map_or(false, |until| now < until) {
+                if record.permanent && record.is_banned(now) {
                     banned.push(*ip);
                     if !record.persisted {
                         pending_write.push(*ip);
@@ -279,7 +327,16 @@ impl AutoBanTracker {
         if !pending_write.is_empty() {
             match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(mut file) => {
-                    let mut lines = String::with_capacity(pending_write.len() * 40);
+                    let mut lines = String::with_capacity(pending_write.len() * 40 + 1);
+
+                    // The previous write may have been interrupted, or the
+                    // file may have been edited by hand, leaving no trailing
+                    // newline. Without one the first appended address would be
+                    // glued to the last line and silently become invalid.
+                    if !file_ends_with_newline(path) {
+                        lines.push('\n');
+                    }
+
                     for ip in &pending_write {
                         lines.push_str(&ip.to_string());
                         lines.push('\n');
@@ -344,9 +401,7 @@ impl AutoBanTracker {
         inner
             .records
             .values()
-            .filter(|record| {
-                record.banned_until.map_or(false, |until| now < until)
-            })
+            .filter(|record| record.is_banned(now))
             .count()
     }
 
@@ -359,8 +414,8 @@ impl AutoBanTracker {
         let before = inner.records.len();
 
         inner.records.retain(|_, record| {
-            if let Some(banned_until) = record.banned_until {
-                now < banned_until
+            if record.is_banned(now) {
+                true
             } else {
                 now.duration_since(record.first_violation).as_secs() < window_secs
             }
@@ -384,7 +439,23 @@ pub fn validate_auto_ban_config(
     auto: &AutoBanConfig,
     ip_ban: &IpBanConfig,
 ) -> anyhow::Result<()> {
-    if !auto.enabled || auto.ban_duration_secs != 0 {
+    if !auto.enabled {
+        return Ok(());
+    }
+
+    if auto.threshold == 0 {
+        return Err(anyhow::anyhow!(
+            "auto_ban.threshold must be at least 1 (got 0)"
+        ));
+    }
+
+    if auto.window_secs == 0 {
+        return Err(anyhow::anyhow!(
+            "auto_ban.window_secs must be at least 1 (got 0)"
+        ));
+    }
+
+    if auto.ban_duration_secs != 0 {
         return Ok(());
     }
 
@@ -396,7 +467,17 @@ pub fn validate_auto_ban_config(
         return Ok(());
     }
 
-    if ip_ban.mode.is_on() && auto.ban_list_path != ip_ban.path {
+    if !ip_ban.mode.is_on() {
+        ::log::warn!(
+            "auto_ban is enabled with permanent bans and ban_list_path '{}', but ip_ban is off; \
+             permanent bans are kept in memory only and are never written to or reloaded from \
+             that file",
+            auto.ban_list_path.display(),
+        );
+        return Ok(());
+    }
+
+    if !paths_refer_to_same_file(&auto.ban_list_path, &ip_ban.path) {
         return Err(anyhow::anyhow!(
             "auto_ban.ban_list_path ('{}') must equal ip_ban.path ('{}') when \
              auto_ban uses permanent bans and ip_ban is enabled; otherwise \
@@ -407,6 +488,22 @@ pub fn validate_auto_ban_config(
     }
 
     Ok(())
+}
+
+/// Compare two paths after resolving them, so that `./ban-list.txt` and
+/// `ban-list.txt` (or different spellings through symlinks) are recognized as
+/// the same file. Falls back to a plain comparison if either path does not
+/// exist yet, which is fine: relative paths that differ textually but point to
+/// the same not-yet-created file are indistinguishable without I/O anyway.
+fn paths_refer_to_same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +677,92 @@ mod tests {
         // Still in memory
         assert_eq!(tracker.tracked_count(), 1);
         assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_expired_temporary_ban_resets_count() {
+        let tracker = AutoBanTracker::new(2, 1, 1, None);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 9, 8, 7));
+
+        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.is_auto_banned(&ip));
+
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+        assert!(!tracker.is_auto_banned(&ip));
+
+        // One violation after expiry must not immediately re-ban the IP: the
+        // count belongs to the ban that just expired.
+        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_flush_adds_missing_leading_newline() {
+        let tmp = std::env::temp_dir().join("test_auto_ban_missing_newline.txt");
+        let _ = std::fs::remove_file(&tmp);
+
+        // A file edited by hand may not end with a newline.
+        std::fs::write(&tmp, "1.1.1.1").unwrap();
+
+        let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
+        let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert_eq!(tracker.flush_to_file(), vec![ip]);
+
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+
+        assert!(contents.contains("1.1.1.1\n9.9.9.9\n"), "contents: {:?}", contents);
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_validate_auto_ban_rejects_zero_threshold_and_window() {
+        let ip_ban = IpBanConfig {
+            mode: crate::ip_ban::IpBanMode::Off,
+            path: "unused.txt".into(),
+        };
+
+        let zero_threshold = AutoBanConfig {
+            enabled: true,
+            threshold: 0,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&zero_threshold, &ip_ban).is_err());
+
+        let zero_window = AutoBanConfig {
+            enabled: true,
+            window_secs: 0,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&zero_window, &ip_ban).is_err());
+
+        // Disabled auto-ban ignores these values.
+        let disabled = AutoBanConfig {
+            enabled: false,
+            threshold: 0,
+            window_secs: 0,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&disabled, &ip_ban).is_ok());
+    }
+
+    #[test]
+    fn test_validate_auto_ban_compares_resolved_paths() {
+        let dir = std::env::temp_dir();
+
+        let path = dir.join("aquatic_auto_ban_path_test.txt");
+        std::fs::write(&path, "").unwrap();
+
+        let indirection = dir.join(".").join("aquatic_auto_ban_path_test.txt");
+
+        assert!(paths_refer_to_same_file(&path, &indirection));
+        assert!(!paths_refer_to_same_file(&path, &dir.join("other.txt")));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

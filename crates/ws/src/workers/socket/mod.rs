@@ -17,7 +17,7 @@ use glommio::channels::channel_mesh::{MeshBuilder, Partial, Role};
 use glommio::channels::local_channel::{new_bounded, LocalSender};
 use glommio::channels::shared_channel::ConnectedReceiver;
 use glommio::net::TcpListener;
-use glommio::timer::TimerActionRepeat;
+use glommio::timer::{sleep, TimerActionRepeat};
 use glommio::{enclose, prelude::*};
 use slotmap::HopSlotMap;
 
@@ -140,8 +140,27 @@ pub async fn run_socket_worker(
         match stream {
             Err(err) => {
                 ::log::error!("accept connection: {:#}", err);
+
+                // Back off briefly so persistent accept errors (for example
+                // file-descriptor exhaustion) do not spin this loop.
+                sleep(Duration::from_millis(100)).await;
             }
             Ok(stream) => {
+                let current_connections = connection_handles.borrow().len();
+
+                if config.network.max_connections_per_worker > 0
+                    && current_connections >= config.network.max_connections_per_worker
+                {
+                    ::log::debug!(
+                        "Connection limit reached ({}/{}), rejecting new connection",
+                        current_connections,
+                        config.network.max_connections_per_worker
+                    );
+
+                    // Dropping the stream closes the connection.
+                    continue;
+                }
+
                 let (ip_version, peer_ip) = match stream.peer_addr() {
                     // A dual-stack listener (`[::]` with `only_ipv6 = false`)
                     // reports IPv4 peers as ::ffff:a.b.c.d. Canonicalize so IP
@@ -177,7 +196,7 @@ pub async fn run_socket_worker(
 
                 let connection_id = connection_handles.borrow_mut().insert(connection_handle);
 
-                spawn_local_into(
+                let spawn_result = spawn_local_into(
                     enclose!((
                         config,
                         access_list,
@@ -217,9 +236,17 @@ pub async fn run_socket_worker(
                         connection_handles.borrow_mut().remove(connection_id);
                     }),
                     tq_regular,
-                )
-                .unwrap()
-                .detach();
+                );
+
+                match spawn_result {
+                    Ok(task) => task.detach(),
+                    Err(err) => {
+                        // The connection was never started, so remove its
+                        // handle instead of leaving it to the cleaning timer.
+                        ::log::error!("spawn connection task: {:#}", err);
+                        connection_handles.borrow_mut().remove(connection_id);
+                    }
+                }
             }
         }
     }
@@ -360,6 +387,11 @@ fn create_tcp_listener(
         .set_reuse_port(true)
         .with_context(|| "socket: set reuse port")?;
 
+    // Allow restarting quickly without waiting for sockets in TIME_WAIT.
+    socket
+        .set_reuse_address(true)
+        .with_context(|| "socket: set reuse address")?;
+
     ::log::info!("binding socket..");
 
     socket
@@ -390,5 +422,7 @@ fn ip_version_to_metrics_str(ip_version: IpVersion) -> &'static str {
 }
 
 fn calculate_in_message_consumer_index(config: &Config, info_hash: InfoHash) -> usize {
-    (info_hash.0[0] as usize) % config.swarm_workers
+    // swarm_workers is validated to be at least one at startup; keep the
+    // modulo panic-free in case a caller skips validation.
+    (info_hash.0[0] as usize) % config.swarm_workers.max(1)
 }

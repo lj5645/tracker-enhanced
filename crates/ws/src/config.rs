@@ -140,6 +140,13 @@ pub struct NetworkConfig {
     pub only_ipv6: bool,
     /// Maximum number of pending TCP connections
     pub tcp_backlog: i32,
+    /// Maximum number of simultaneous connections per socket worker.
+    ///
+    /// Use 0 for unlimited. When the limit is reached, new connections are
+    /// accepted and immediately closed. This prevents out-of-memory errors
+    /// during connection storms. WebSocket connections are long-lived, so this
+    /// limit matters more than it does for the HTTP tracker.
+    pub max_connections_per_worker: usize,
 
     /// Enable TLS
     ///
@@ -169,6 +176,7 @@ impl Default for NetworkConfig {
             address: SocketAddr::from(([0, 0, 0, 0], 3000)),
             only_ipv6: false,
             tcp_backlog: 1024,
+            max_connections_per_worker: 100_000,
 
             enable_tls: false,
             tls_certificate_path: "".into(),

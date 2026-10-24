@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::canonical_ip;
+use crate::{canonical_ip, contains_ascii_case_insensitive};
 
 pub struct RequestFilter {
     sql_injection_patterns: Vec<&'static str>,
@@ -15,9 +15,12 @@ pub struct RequestFilter {
 impl Default for RequestFilter {
     fn default() -> Self {
         Self {
+            // SQL keywords are matched on word boundaries (see
+            // `matches_pattern`) to avoid flagging them inside random
+            // hex-encoded query values. Single characters such as `'`, `"` and
+            // `0x` are deliberately not listed: they occur in too many
+            // harmless URLs to be useful and made false positives easy.
             sql_injection_patterns: vec![
-                "'",
-                "\"",
                 "--",
                 "/*",
                 "*/",
@@ -31,7 +34,6 @@ impl Default for RequestFilter {
                 "execute",
                 "xp_",
                 "sp_",
-                "0x",
             ],
             path_traversal_patterns: vec![
                 "../",
@@ -41,6 +43,10 @@ impl Default for RequestFilter {
                 "..%2f",
                 "..%5c",
             ],
+            // Unambiguous crawler/scanning signatures only. Generic HTTP
+            // libraries (Java, OkHttp, Apache HttpClient, Go, node-fetch,
+            // axios, Postman, Insomnia) are used by legitimate clients and
+            // monitoring tools as well, so they are not treated as crawlers.
             crawler_user_agents: vec![
                 "bot",
                 "crawler",
@@ -50,25 +56,28 @@ impl Default for RequestFilter {
                 "python-urllib",
                 "curl",
                 "wget",
-                "httpclient",
-                "java/",
-                "okhttp",
-                "apache-httpclient",
-                "go-http-client",
-                "node-fetch",
-                "axios",
-                "postman",
-                "insomnia",
                 "httpie",
+                "go-http-client",
             ],
+            // Non-public address space: RFC 1918, CGNAT, link-local, loopback,
+            // "this network", multicast and reserved ranges, plus ULA,
+            // loopback, link-local and multicast for IPv6.
             private_ip_ranges: vec![
+                (IpAddr::V4("0.0.0.0".parse().unwrap()), 8),
                 (IpAddr::V4("10.0.0.0".parse().unwrap()), 8),
+                (IpAddr::V4("100.64.0.0".parse().unwrap()), 10),
+                (IpAddr::V4("127.0.0.0".parse().unwrap()), 8),
+                (IpAddr::V4("169.254.0.0".parse().unwrap()), 16),
                 (IpAddr::V4("172.16.0.0".parse().unwrap()), 12),
                 (IpAddr::V4("192.168.0.0".parse().unwrap()), 16),
-                (IpAddr::V4("127.0.0.0".parse().unwrap()), 8),
+                (IpAddr::V4("198.18.0.0".parse().unwrap()), 15),
+                (IpAddr::V4("224.0.0.0".parse().unwrap()), 4),
+                (IpAddr::V4("240.0.0.0".parse().unwrap()), 4),
+                (IpAddr::V6("::".parse().unwrap()), 128),
                 (IpAddr::V6("::1".parse().unwrap()), 128),
                 (IpAddr::V6("fc00::".parse().unwrap()), 7),
                 (IpAddr::V6("fe80::".parse().unwrap()), 10),
+                (IpAddr::V6("ff00::".parse().unwrap()), 8),
             ],
         }
     }
@@ -116,41 +125,16 @@ impl RequestFilter {
         user_agent: Option<&str>,
         config: &RequestFilterConfig,
     ) -> FilterResult {
-        let uri_lower = if config.filter_sql_injection || config.filter_path_traversal {
-            Some(uri.to_lowercase())
-        } else {
-            None
-        };
-
-        if config.filter_sql_injection {
-            if let Some(uri_lower) = uri_lower.as_deref() {
-                for pattern in &self.sql_injection_patterns {
-                    if uri_lower.contains(pattern) {
-                        return FilterResult::BlockedSqlInjection;
-                    }
-                }
-            }
+        if config.filter_sql_injection && self.is_sql_injection(uri) {
+            return FilterResult::BlockedSqlInjection;
         }
 
-        if config.filter_path_traversal {
-            if let Some(uri_lower) = uri_lower.as_deref() {
-                for pattern in &self.path_traversal_patterns {
-                    if uri_lower.contains(pattern) {
-                        return FilterResult::BlockedPathTraversal;
-                    }
-                }
-            }
+        if config.filter_path_traversal && self.is_path_traversal(uri) {
+            return FilterResult::BlockedPathTraversal;
         }
 
-        if config.filter_crawlers {
-            if let Some(ua) = user_agent {
-                let ua_lower = ua.to_lowercase();
-                for pattern in &self.crawler_user_agents {
-                    if ua_lower.contains(pattern) {
-                        return FilterResult::BlockedCrawler;
-                    }
-                }
-            }
+        if config.filter_crawlers && self.is_crawler(user_agent) {
+            return FilterResult::BlockedCrawler;
         }
 
         if user_agent.is_none() && config.filter_missing_user_agent {
@@ -219,23 +203,78 @@ impl RequestFilter {
 
     /// Check if the URI contains SQL injection patterns
     pub fn is_sql_injection(&self, uri: &str) -> bool {
-        let uri_lower = uri.to_lowercase();
-        self.sql_injection_patterns.iter().any(|p| uri_lower.contains(p))
+        self.sql_injection_patterns
+            .iter()
+            .any(|pattern| matches_pattern(uri, pattern))
     }
 
     /// Check if the URI contains path traversal patterns
     pub fn is_path_traversal(&self, uri: &str) -> bool {
-        let uri_lower = uri.to_lowercase();
-        self.path_traversal_patterns.iter().any(|p| uri_lower.contains(p))
+        self.path_traversal_patterns
+            .iter()
+            .any(|pattern| contains_ascii_case_insensitive(uri, pattern))
     }
 
     /// Check if the User-Agent matches crawler patterns
     pub fn is_crawler(&self, user_agent: Option<&str>) -> bool {
         user_agent.map_or(false, |ua| {
-            let ua_lower = ua.to_lowercase();
-            self.crawler_user_agents.iter().any(|p| ua_lower.contains(p))
+            self.crawler_user_agents
+                .iter()
+                .any(|pattern| contains_ascii_case_insensitive(ua, pattern))
         })
     }
+}
+
+/// Match one SQL-injection pattern without allocating.
+///
+/// Whole-word patterns such as `select` are only matched on word boundaries,
+/// so a percent-encoded peer id or key cannot accidentally contain them. For
+/// example, `%73%65%6c%65%63%74` contains no literal `select`, while a plain
+/// `info_hash=select` still matches. Symbol and prefix patterns (`--`, `xp_`)
+/// are matched as plain substrings.
+fn matches_pattern(haystack: &str, pattern: &str) -> bool {
+    if pattern.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        contains_word_ascii_case_insensitive(haystack, pattern)
+    } else {
+        contains_ascii_case_insensitive(haystack, pattern)
+    }
+}
+
+fn contains_word_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+
+    if haystack.len() < needle.len() {
+        return false;
+    }
+
+    // The hex digit ending a percent escape (`%20`) is alphanumeric but is a
+    // separator in the decoded value, not part of a word next to the keyword.
+    // Without this, `1%20union%20select` would not be recognized while the
+    // same query with literal spaces would be.
+    let is_word_byte_at = |index: usize| {
+        let byte = haystack[index];
+
+        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
+            return false;
+        }
+
+        !(index >= 2 && haystack[index - 2] == b'%' && haystack[index - 1].is_ascii_hexdigit())
+    };
+
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .any(|(start, window)| {
+            window.eq_ignore_ascii_case(needle)
+                && (start == 0 || !is_word_byte_at(start - 1))
+                && (start + needle.len() == haystack.len()
+                    || !is_word_byte_at(start + needle.len()))
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
@@ -276,7 +315,7 @@ mod tests {
         let filter = RequestFilter::new();
 
         assert_eq!(
-            filter.check_request("/announce?info_hash=' OR 1=1", None, false),
+            filter.check_request("/announce?info_hash=1%20union%20select", None, false),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
@@ -285,6 +324,34 @@ mod tests {
         );
         assert_eq!(
             filter.check_request("/announce?info_hash=valid", None, false),
+            FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_sql_filter_does_not_flag_benign_values() {
+        let filter = RequestFilter::new();
+
+        // Quotes are used by some clients in unrelated parameters; they are
+        // no longer treated as injection on their own.
+        assert_eq!(
+            filter.check_request("/announce?comment=it's-fine", None, false),
+            FilterResult::Allowed
+        );
+
+        // Keywords are only matched on word boundaries.
+        assert_eq!(
+            filter.check_request("/announce?info_hash=selectvalue", None, false),
+            FilterResult::Allowed
+        );
+        assert_eq!(
+            filter.check_request("/announce?info_hash=unionall", None, false),
+            FilterResult::Allowed
+        );
+
+        // Percent-encoded letters are not keywords either.
+        assert_eq!(
+            filter.check_request("/announce?info_hash=%73%65%6c%65%63%74", None, false),
             FilterResult::Allowed
         );
     }
@@ -369,7 +436,11 @@ mod tests {
             ..disabled.clone()
         };
         assert_eq!(
-            filter.check_request_with_config("/announce?info_hash=' OR 1=1", None, &sql_only),
+            filter.check_request_with_config(
+                "/announce?info_hash=1%20union%20select",
+                None,
+                &sql_only
+            ),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
@@ -417,6 +488,40 @@ mod tests {
             filter.check_ip(&IpAddr::V4("8.8.8.8".parse().unwrap())),
             FilterResult::Allowed
         );
+
+        // CGNAT, link-local and "this network" are not public client
+        // addresses either.
+        assert_eq!(
+            filter.check_ip(&IpAddr::V4("100.64.1.2".parse().unwrap())),
+            FilterResult::BlockedPrivateIp
+        );
+        assert_eq!(
+            filter.check_ip(&IpAddr::V4("169.254.1.2".parse().unwrap())),
+            FilterResult::BlockedPrivateIp
+        );
+        assert_eq!(
+            filter.check_ip(&IpAddr::V4("0.0.0.0".parse().unwrap())),
+            FilterResult::BlockedPrivateIp
+        );
+        assert_eq!(
+            filter.check_ip(&IpAddr::V4("224.0.0.1".parse().unwrap())),
+            FilterResult::BlockedPrivateIp
+        );
+    }
+
+    #[test]
+    fn test_generic_http_libraries_are_not_crawlers() {
+        let filter = RequestFilter::new();
+
+        for ua in [
+            "Apache-HttpClient/4.5.13 (Java/17)",
+            "okhttp/4.9.0",
+            "node-fetch/1.0",
+            "axios/1.6.0",
+            "PostmanRuntime/7.36.0",
+        ] {
+            assert!(!filter.is_crawler(Some(ua)), "unexpectedly blocked: {ua}");
+        }
     }
 
     #[test]

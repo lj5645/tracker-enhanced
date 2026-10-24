@@ -1,6 +1,4 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -8,6 +6,8 @@ use aquatic_toml_config::TomlConfig;
 use arc_swap::{ArcSwap, Cache};
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
+
+use crate::list_file::read_list_file;
 
 /// Access list mode. Available modes are allow, deny and off.
 #[derive(Clone, Copy, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
@@ -56,23 +56,13 @@ impl AccessList {
         Ok(())
     }
 
-    pub fn create_from_path(path: &PathBuf) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
+    pub fn create_from_path(path: &Path) -> anyhow::Result<Self> {
         let mut new_list = Self::default();
 
-        for line in reader.lines() {
-            let line = line?;
-            let line = line.trim();
-
-            if line.is_empty() {
-                continue;
-            }
-
-            new_list
-                .insert_from_line(line)
-                .with_context(|| format!("Invalid line in access list: {}", line))?;
+        for (line_number, line) in read_list_file(path)? {
+            new_list.insert_from_line(&line).with_context(|| {
+                format!("Invalid access list entry on line {}: {}", line_number, line)
+            })?;
         }
 
         Ok(new_list)
@@ -160,6 +150,26 @@ mod tests {
         assert!(f("aaaabbbbccccddddeeeeaaaabbbbccccddddeeeef").is_err());
         assert!(f("aaaabbbbccccddddeeeeaaaabbbbccccddddeee").is_err());
         assert!(f("aaaabbbbccccddddeeeeaaaabbbbccccddddeeeö").is_err());
+    }
+
+    #[test]
+    fn test_load_tolerates_bom_and_comments() {
+        let path = std::env::temp_dir().join("aquatic_access_list_formats_test.txt");
+        std::fs::write(
+            &path,
+            "\u{feff}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\
+             # comment\r\n\
+             bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb # inline\r\n",
+        )
+        .unwrap();
+
+        let list = AccessList::create_from_path(&path).unwrap();
+
+        assert_eq!(list.len(), 2);
+        assert!(list.allows(AccessListMode::Allow, &[0xaa; 20]));
+        assert!(list.allows(AccessListMode::Allow, &[0xbb; 20]));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use aquatic_common::rustls_config::create_rustls_config;
-use aquatic_common::{ServerStartInstant, WorkerType};
+use aquatic_common::{
+    validate_interval, validate_worker_counts, ServerStartInstant, WorkerType,
+};
 use arc_swap::ArcSwap;
 use glommio::{channels::channel_mesh::MeshBuilder, prelude::*};
 use signal_hook::{consts::SIGUSR1, consts::SIGUSR2, iterator::Signals};
@@ -29,7 +31,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const SHARED_IN_CHANNEL_SIZE: usize = 1024;
 
-pub fn run(config: Config) -> ::anyhow::Result<()> {
+pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     if config.network.enable_tls && config.network.enable_http_health_checks {
         return Err(anyhow::anyhow!(
             "configuration: network.enable_tls and network.enable_http_health_check can't both be set to true"
@@ -37,6 +39,23 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     }
 
     let mut signals = Signals::new([SIGUSR1, SIGUSR2])?;
+
+    validate_worker_counts(&mut config.socket_workers, Some(config.swarm_workers))?;
+
+    validate_interval(
+        "cleaning.torrent_cleaning_interval",
+        config.cleaning.torrent_cleaning_interval,
+    )?;
+    validate_interval(
+        "cleaning.connection_cleaning_interval",
+        config.cleaning.connection_cleaning_interval,
+    )?;
+
+    #[cfg(feature = "metrics")]
+    validate_interval(
+        "metrics.torrent_count_update_interval",
+        config.metrics.torrent_count_update_interval,
+    )?;
 
     validate_auto_ban_config(&config.auto_ban, &config.ip_ban)?;
 
@@ -86,13 +105,19 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
     } else {
         None
     };
-    let mut opt_tls_cert_data = if config.network.enable_tls {
-        Some(
-            ::std::fs::read(&config.network.tls_certificate_path)
-                .with_context(|| "open tls certificate file")?,
+    let (mut opt_tls_cert_data, mut opt_tls_key_data) = if config.network.enable_tls {
+        (
+            Some(
+                ::std::fs::read(&config.network.tls_certificate_path)
+                    .with_context(|| "open tls certificate file")?,
+            ),
+            Some(
+                ::std::fs::read(&config.network.tls_private_key_path)
+                    .with_context(|| "open tls private key file")?,
+            ),
         )
     } else {
-        None
+        (None, None)
     };
 
     let server_start_instant = ServerStartInstant::new();
@@ -134,6 +159,12 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
 
                     // Always cleanup expired entries
                     tracker.cleanup();
+
+                    ::log::debug!(
+                        "auto-ban: {} IPs tracked, {} currently banned",
+                        tracker.tracked_count(),
+                        tracker.banned_count(),
+                    );
                 }
 
                 #[allow(unreachable_code)]
@@ -236,25 +267,39 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
                             let _ = update_access_list(&config.access_list, &state.access_list);
 
                             if let Some(tls_config) = opt_tls_config.as_ref() {
-                                match ::std::fs::read(&config.network.tls_certificate_path) {
-                                    Ok(data) if &data == opt_tls_cert_data.as_ref().unwrap() => {
-                                        ::log::info!("skipping tls config update: certificate identical to currently loaded");
-                                    }
-                                    Ok(data) => {
-                                        match create_rustls_config(
-                                            &config.network.tls_certificate_path,
-                                            &config.network.tls_private_key_path,
-                                        ) {
-                                            Ok(config) => {
-                                                tls_config.store(Arc::new(config));
-                                                opt_tls_cert_data = Some(data);
+                                match (
+                                    ::std::fs::read(&config.network.tls_certificate_path),
+                                    ::std::fs::read(&config.network.tls_private_key_path),
+                                ) {
+                                    (Ok(cert_data), Ok(key_data)) => {
+                                        // Compare both files: a renewed certificate
+                                        // often reuses the private key, and a rotated
+                                        // key with an unchanged certificate must also
+                                        // be picked up.
+                                        let unchanged =
+                                            opt_tls_cert_data.as_ref() == Some(&cert_data)
+                                                && opt_tls_key_data.as_ref() == Some(&key_data);
 
-                                                ::log::info!("successfully updated tls config");
+                                        if unchanged {
+                                            ::log::info!("skipping tls config update: files identical to currently loaded");
+                                        } else {
+                                            match create_rustls_config(
+                                                &config.network.tls_certificate_path,
+                                                &config.network.tls_private_key_path,
+                                            ) {
+                                                Ok(config) => {
+                                                    tls_config.store(Arc::new(config));
+                                                    opt_tls_cert_data = Some(cert_data);
+                                                    opt_tls_key_data = Some(key_data);
+
+                                                    ::log::info!("successfully updated tls config");
+                                                }
+                                                Err(err) => ::log::error!("could not update tls config: {:#}", err),
                                             }
-                                            Err(err) => ::log::error!("could not update tls config: {:#}", err),
                                         }
                                     }
-                                    Err(err) => ::log::error!("couldn't read tls certificate file: {:#}", err),
+                                    (Err(err), _) => ::log::error!("couldn't read tls certificate file: {:#}", err),
+                                    (_, Err(err)) => ::log::error!("couldn't read tls private key file: {:#}", err),
                                 }
                             }
                         }

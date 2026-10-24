@@ -569,14 +569,14 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
 
             let consumer_index = calculate_in_message_consumer_index(&self.config, info_hash);
 
-            // Only fails when receiver is closed
+            // Only fails when the receiving swarm worker is gone.
             self.in_message_senders
                 .send_to(
                     consumer_index,
                     (self.make_connection_meta(None), in_message),
                 )
                 .await
-                .unwrap();
+                .map_err(|_| anyhow::anyhow!("announce request receiver closed"))?;
         } else {
             self.send_error_response(
                 "Info hash not allowed".into(),
@@ -651,11 +651,11 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionReader<S> {
                 info_hashes: Some(ScrapeRequestInfoHashes::Multiple(info_hashes)),
             });
 
-            // Only fails when receiver is closed
+            // Only fails when the receiving swarm worker is gone.
             self.in_message_senders
                 .send_to(consumer_index, (meta, in_message))
                 .await
-                .unwrap();
+                .map_err(|_| anyhow::anyhow!("scrape request receiver closed"))?;
         }
 
         Ok(())
@@ -713,9 +713,9 @@ impl<S: futures::AsyncRead + futures::AsyncWrite + Unpin> ConnectionWriter<S> {
 
             match out_message {
                 OutMessage::ScrapeResponse(out_message) => {
-                    let pending_scrape_id = meta
-                        .pending_scrape_id
-                        .expect("meta.pending_scrape_id not set");
+                    let pending_scrape_id = meta.pending_scrape_id.ok_or_else(|| {
+                        anyhow::anyhow!("scrape response without a pending scrape id")
+                    })?;
 
                     let mut pending_responses = self.pending_scrape_slab.borrow_mut();
 
@@ -843,10 +843,16 @@ impl ConnectionCleanupData {
                 announced_info_hashes,
             };
 
-            control_message_senders
-                .send_to(consumer_index, message)
-                .await
-                .expect("control message receiver open");
+            // The receiver is only closed during shutdown. Panicking here would
+            // abort cleanup halfway and leave metrics and swarm state stale, so
+            // report it instead.
+            if let Err(err) = control_message_senders.send_to(consumer_index, message).await {
+                ::log::error!(
+                    "connection cleanup: could not notify swarm worker {}: {:?}",
+                    consumer_index,
+                    err
+                );
+            }
         }
 
         #[cfg(feature = "metrics")]
@@ -883,17 +889,21 @@ fn resolve_handshake_peer_ip(
 ) -> IpAddr {
     let socket_peer_ip = canonical_ip(socket_peer_ip);
 
-    if config.trusted_proxies.enabled && trusted_proxies.load().is_trusted(socket_peer_ip) {
-        if let Some(xff) = opt_xff {
-            if let Some(client_ip) = last_forwarded_for_ip(xff) {
-                return canonical_ip(client_ip);
-            }
+    if config.trusted_proxies.enabled {
+        let trusted = trusted_proxies.load();
 
-            ::log::warn!(
-                "Invalid X-Forwarded-For header from trusted proxy {}: {}",
-                socket_peer_ip,
-                xff
-            );
+        if trusted.is_trusted(socket_peer_ip) {
+            if let Some(xff) = opt_xff {
+                if let Some(client_ip) = last_forwarded_for_ip(xff, &trusted) {
+                    return canonical_ip(client_ip);
+                }
+
+                ::log::warn!(
+                    "Invalid X-Forwarded-For header from trusted proxy {}: {}",
+                    socket_peer_ip,
+                    xff
+                );
+            }
         }
     }
 

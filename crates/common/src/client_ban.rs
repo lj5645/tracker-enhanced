@@ -1,12 +1,12 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aquatic_toml_config::TomlConfig;
 use arc_swap::{ArcSwap, Cache};
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
+
+use crate::list_file::read_list_file;
 
 #[derive(Clone, Copy, Debug, PartialEq, TomlConfig, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,6 +26,12 @@ impl ClientBanMode {
 pub struct ClientBanConfig {
     pub mode: ClientBanMode,
     pub path: PathBuf,
+    /// Also ban the built-in list of known leech-only ("vampire") clients.
+    ///
+    /// The built-in prefixes (`-xl`, `-sd`, `-qd`, `-bn`, `-bc`, `-uw`,
+    /// `-dt`, `-fg`, `-fs`) are applied in addition to the configured list.
+    /// Set to false to leave the ban decision entirely to the list file.
+    pub ban_vampire_clients: bool,
 }
 
 impl Default for ClientBanConfig {
@@ -33,31 +39,37 @@ impl Default for ClientBanConfig {
         Self {
             mode: ClientBanMode::Off,
             path: "./client-ban-list.txt".into(),
+            ban_vampire_clients: true,
         }
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ClientBanList {
     banned_patterns: HashSet<String>,
+    ban_vampire_clients: bool,
+}
+
+impl Default for ClientBanList {
+    fn default() -> Self {
+        Self {
+            banned_patterns: HashSet::new(),
+            ban_vampire_clients: true,
+        }
+    }
 }
 
 impl ClientBanList {
-    pub fn create_from_path(path: &PathBuf) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
+    pub fn create_from_path(path: &Path, ban_vampire_clients: bool) -> anyhow::Result<Self> {
+        let mut list = Self {
+            banned_patterns: HashSet::new(),
+            ban_vampire_clients,
+        };
 
-        let mut list = Self::default();
-
-        for line in reader.lines() {
-            let line = line?;
-            let line = line.trim();
-
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            list.banned_patterns.insert(line.to_lowercase());
+        for (_, line) in read_list_file(path)? {
+            // peer_id prefixes are ASCII in practice; lowercasing once at load
+            // time keeps the hot path allocation-light.
+            list.banned_patterns.insert(line.to_ascii_lowercase());
         }
 
         Ok(list)
@@ -66,12 +78,16 @@ impl ClientBanList {
     pub fn is_banned(&self, peer_id: &str) -> bool {
         // These prefixes are known leech-only ("vampire") clients. They apply
         // in addition to the configurable list so a stale list file cannot
-        // silently re-enable them.
-        if is_vampire_client(peer_id) {
+        // silently re-enable them, unless the operator opts out.
+        if self.ban_vampire_clients && is_vampire_client(peer_id) {
             return true;
         }
 
-        let peer_id_lower = peer_id.to_lowercase();
+        if self.banned_patterns.is_empty() {
+            return false;
+        }
+
+        let peer_id_lower = peer_id.to_ascii_lowercase();
 
         for pattern in &self.banned_patterns {
             if peer_id_lower.starts_with(pattern) {
@@ -98,7 +114,10 @@ pub type ClientBanListCache = Cache<Arc<ClientBanListArcSwap>, Arc<ClientBanList
 
 impl ClientBanListQuery for ClientBanListArcSwap {
     fn update(&self, config: &ClientBanConfig) -> anyhow::Result<()> {
-        self.store(Arc::new(ClientBanList::create_from_path(&config.path)?));
+        self.store(Arc::new(ClientBanList::create_from_path(
+            &config.path,
+            config.ban_vampire_clients,
+        )?));
         Ok(())
     }
 
@@ -130,28 +149,24 @@ pub fn update_client_ban_list(
     Ok(())
 }
 
+const VAMPIRE_PREFIXES: [&str; 9] = [
+    "-xl", // 迅雷
+    "-sd", // 迅雷
+    "-qd", // QQ旋风
+    "-bn", // BitComet
+    "-bc", // BitComet
+    "-uw", // uTorrent Web
+    "-dt", // DotTorrent
+    "-fg", // FlashGet
+    "-fs", // FrostWire
+];
+
 pub fn is_vampire_client(peer_id: &str) -> bool {
-    let vampire_prefixes = [
-        "-xl",      // 迅雷
-        "-sd",      // 迅雷
-        "-qd",      // QQ旋风
-        "-bn",      // BitComet
-        "-bc",      // BitComet
-        "-uw",      // uTorrent Web
-        "-dt",      // DotTorrent
-        "-fg",      // FlashGet
-        "-fs",      // FrostWire
-    ];
-
-    let peer_id_lower = peer_id.to_lowercase();
-    
-    for prefix in &vampire_prefixes {
-        if peer_id_lower.starts_with(prefix) {
-            return true;
-        }
-    }
-
-    false
+    VAMPIRE_PREFIXES.iter().any(|prefix| {
+        peer_id
+            .get(..prefix.len())
+            .map_or(false, |start| start.eq_ignore_ascii_case(prefix))
+    })
 }
 
 #[cfg(test)]
@@ -197,5 +212,32 @@ mod tests {
         assert!(is_vampire_client("-QD5678-ghi012"));
         assert!(!is_vampire_client("-UT3456-jkl345"));
         assert!(!is_vampire_client("-TR7890-mno678"));
+    }
+
+    #[test]
+    fn test_vampire_ban_can_be_disabled() {
+        let mut list = ClientBanList::default();
+        list.ban_vampire_clients = false;
+
+        assert!(!list.is_banned("-XL0012-abc123"));
+
+        list.banned_patterns.insert("-xl".to_string());
+
+        // An explicit list entry still applies.
+        assert!(list.is_banned("-XL0012-abc123"));
+    }
+
+    #[test]
+    fn test_load_tolerates_bom_comments_and_non_utf8() {
+        let path = std::env::temp_dir().join("aquatic_client_ban_formats_test.txt");
+        // A GBK-encoded comment, a BOM, CRLF, an inline comment and a pattern.
+        std::fs::write(&path, b"\xc9\xa8\xc3\xe8\xc6\xf7\r\n\xef\xbb\xbf-MX # inline\r\n").unwrap();
+
+        let list = ClientBanList::create_from_path(&path, false).unwrap();
+
+        assert!(list.is_banned("-MX0001-abc"));
+        assert!(!list.is_banned("-UT0001-abc"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

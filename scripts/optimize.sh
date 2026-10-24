@@ -181,7 +181,15 @@ detect_physical_nic() {
         echo "可用网卡列表:"
         ls /sys/class/net/ 2>/dev/null | grep -v -E '^(lo|docker|br-|veth|virbr)' || echo "  (无)"
         echo ""
-        read -rp "请输入网卡名称: " DEFAULT_NIC
+
+        # Only prompt when attached to a terminal: with `curl ... | bash` or in
+        # CI the read would block or consume the wrong input.
+        if [ -t 0 ]; then
+            read -rp "请输入网卡名称: " DEFAULT_NIC
+        else
+            warn "非交互式运行，无法询问网卡名称"
+        fi
+
         if [ -z "$DEFAULT_NIC" ]; then
             warn "未指定网卡，跳过网卡相关优化"
             NO_NIC=1
@@ -236,6 +244,10 @@ optimize_sysctl() {
 
     # 要设置的参数（键=值）
     # 每个参数都会先检查内核是否支持
+    # Only settings that are safe for a general-purpose server. In particular
+    # tcp_tw_reuse, tcp_fin_timeout and ip_local_port_range are deliberately
+    # left untouched: they change how the kernel allocates ephemeral ports and
+    # reuses TIME_WAIT sockets, which can break other services on the same host.
     PARAMS=(
         "fs.file-max=1048576"
         "net.core.somaxconn=65535"
@@ -248,10 +260,7 @@ optimize_sysctl() {
         "net.core.optmem_max=65536"
         "net.ipv4.tcp_rmem=4096 87380 16777216"
         "net.ipv4.tcp_wmem=4096 65536 16777216"
-        "net.ipv4.tcp_tw_reuse=1"
-        "net.ipv4.tcp_fin_timeout=15"
         "net.ipv4.tcp_keepalive_time=600"
-        "net.ipv4.ip_local_port_range=1024 65535"
     )
 
     # conntrack 参数（可选，需要 netfilter 模块）
@@ -288,27 +297,19 @@ optimize_sysctl() {
     done
 
     # 将成功的参数写入配置文件（持久化）
+    # 旧的标记块已在上面删除，这里只追加一次，避免重复内容
     if [ ${#SUCCESS_PARAMS[@]} -gt 0 ]; then
-        echo "" >> "$SYSCTL_FILE"
-        echo "# ========================== OpenTracker 性能优化 ==========================" >> "$SYSCTL_FILE"
-        echo "# 由 optimize.sh 自动生成 - $(date '+%Y-%m-%d %H:%M:%S')" >> "$SYSCTL_FILE"
-        echo "# ========================== End OpenTracker ==========================" >> "$SYSCTL_FILE"
-        # 在标记块内插入参数
-        sed -i "/# 由 optimize.sh 自动生成/a\\" "$SYSCTL_FILE" 2>/dev/null || true
-
-        # 直接追加到标记后面
-        # 先删除刚创建的空行标记块，重新写入
-        sed -i '/# =.*OpenTracker/,/# =.*End OpenTracker/d' "$SYSCTL_FILE" 2>/dev/null || true
-
-        echo "" >> "$SYSCTL_FILE"
-        echo "# ========================== OpenTracker 性能优化 ==========================" >> "$SYSCTL_FILE"
-        echo "# 由 optimize.sh 自动生成 - $(date '+%Y-%m-%d %H:%M:%S')" >> "$SYSCTL_FILE"
-        for param in "${SUCCESS_PARAMS[@]}"; do
-            key="${param%%=*}"
-            value="${param#*=}"
-            echo "${key} = ${value}" >> "$SYSCTL_FILE"
-        done
-        echo "# ========================== End OpenTracker ==========================" >> "$SYSCTL_FILE"
+        {
+            echo ""
+            echo "# ========================== OpenTracker 性能优化 =========================="
+            echo "# 由 optimize.sh 自动生成 - $(date '+%Y-%m-%d %H:%M:%S')"
+            for param in "${SUCCESS_PARAMS[@]}"; do
+                key="${param%%=*}"
+                value="${param#*=}"
+                echo "${key} = ${value}"
+            done
+            echo "# ========================== End OpenTracker =========================="
+        } >> "$SYSCTL_FILE"
     fi
 
     info "sysctl 参数优化完成 (成功: ${#SUCCESS_PARAMS[@]}, 跳过: ${SKIPPED_COUNT})"
@@ -332,12 +333,9 @@ optimize_ulimit() {
     # 备份
     cp "$LIMITS_FILE" "${LIMITS_FILE}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || warn "备份 limits.conf 失败"
 
-    # 删除旧的 tracker 相关配置
+    # 只删除本脚本上次写入的标记块，保留管理员已有的 nofile 配置。
+    # limits.conf 中后面的条目覆盖前面的条目，因此追加即可生效。
     sed -i '/# OpenTracker limits/,/# End OpenTracker limits/d' "$LIMITS_FILE" 2>/dev/null || true
-    sed -i '/\* soft nofile/d' "$LIMITS_FILE" 2>/dev/null || true
-    sed -i '/\* hard nofile/d' "$LIMITS_FILE" 2>/dev/null || true
-    sed -i '/root soft nofile/d' "$LIMITS_FILE" 2>/dev/null || true
-    sed -i '/root hard nofile/d' "$LIMITS_FILE" 2>/dev/null || true
 
     # 追加新配置
     cat >> "$LIMITS_FILE" << 'EOF'
@@ -498,8 +496,47 @@ setup_persistence() {
         INIT_SYSTEM="sysv"
     fi
 
+    # Everything that has to run at boot lives in a separate script. Embedding
+    # shell commands directly in ExecStart produced an invalid unit (systemd
+    # does not support multi-line ExecStart).
+    local OPTIMIZE_SCRIPT="/usr/local/sbin/tracker-optimize.sh"
+    local FLOW_ENTRIES=$(( ${QUEUE_COUNT:-1} * 4096 ))
+
+    mkdir -p /usr/local/sbin 2>/dev/null || warn "创建 /usr/local/sbin 失败"
+
+    cat > "$OPTIMIZE_SCRIPT" << EOF
+#!/bin/bash
+# 由 optimize.sh 自动生成: 恢复 RPS 与网卡环形缓冲区设置
+
+for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_cpus; do
+    [ -f "\$i" ] && echo "${RPS_MASK}" > "\$i" 2>/dev/null
+done
+
+if [ -f /proc/sys/net/core/rps_sock_flow_entries ]; then
+    echo ${FLOW_ENTRIES} > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+fi
+
+for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_flow_cnt; do
+    [ -f "\$i" ] && echo "4096" > "\$i" 2>/dev/null
+done
+EOF
+
+    # 环形缓冲区（如果可用且支持）
+    if check_cmd ethtool; then
+        RING_INFO=$(ethtool -g "$DEFAULT_NIC" 2>/dev/null) || true
+        if [ -n "$RING_INFO" ]; then
+            RX_MAX=$(echo "$RING_INFO" | awk '/Pre-set maximums/,/Current hardware settings/' | grep -i "RX:" | head -1 | awk '{print $2}')
+            TX_MAX=$(echo "$RING_INFO" | awk '/Pre-set maximums/,/Current hardware settings/' | grep -i "TX:" | head -1 | awk '{print $2}')
+            if [ -n "$RX_MAX" ] && [ "$RX_MAX" != "n/a" ] 2>/dev/null; then
+                printf '\ncommand -v ethtool &>/dev/null && ethtool -G %s rx %s tx %s 2>/dev/null\n' \
+                    "$DEFAULT_NIC" "$RX_MAX" "$TX_MAX" >> "$OPTIMIZE_SCRIPT"
+            fi
+        fi
+    fi
+
+    chmod +x "$OPTIMIZE_SCRIPT" 2>/dev/null || warn "设置 ${OPTIMIZE_SCRIPT} 可执行权限失败"
+
     if [ "$INIT_SYSTEM" = "systemd" ]; then
-        # 使用 systemd service
         cat > /etc/systemd/system/tracker-optimize.service << EOF
 [Unit]
 Description=OpenTracker Network Optimization
@@ -509,31 +546,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c '
-# RPS 配置
-for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_cpus; do
-    [ -f "\$i" ] && echo "${RPS_MASK}" > "\$i" 2>/dev/null || true
-done
-[ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo ${QUEUE_COUNT:-1} > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true
-for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_flow_cnt; do
-    [ -f "\$i" ] && echo "4096" > "\$i" 2>/dev/null || true
-done
-EOF
-
-        # ethtool 命令（如果可用且支持）
-        if check_cmd ethtool; then
-            RING_INFO=$(ethtool -g "$DEFAULT_NIC" 2>/dev/null) || true
-            if [ -n "$RING_INFO" ]; then
-                RX_MAX=$(echo "$RING_INFO" | awk '/Pre-set maximums/,/Current hardware settings/' | grep -i "RX:" | head -1 | awk '{print $2}')
-                TX_MAX=$(echo "$RING_INFO" | awk '/Pre-set maximums/,/Current hardware settings/' | grep -i "TX:" | head -1 | awk '{print $2}')
-                if [ -n "$RX_MAX" ] && [ "$RX_MAX" != "n/a" ] 2>/dev/null; then
-                    echo "command -v ethtool &>/dev/null && ethtool -G ${DEFAULT_NIC} rx ${RX_MAX} tx ${TX_MAX} 2>/dev/null || true" >> /etc/systemd/system/tracker-optimize.service
-                fi
-            fi
-        fi
-
-        cat >> /etc/systemd/system/tracker-optimize.service << 'EOF'
-'
+ExecStart=${OPTIMIZE_SCRIPT}
 
 [Install]
 WantedBy=multi-user.target
@@ -546,7 +559,7 @@ EOF
         info "已创建 systemd 服务: tracker-optimize.service"
 
     else
-        # 使用 rc.local
+        # 使用 rc.local：保留原有内容，仅追加/替换本脚本的标记块
         RCLOCAL="/etc/rc.local"
 
         # 备份
@@ -554,18 +567,31 @@ EOF
             cp "$RCLOCAL" "${RCLOCAL}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || warn "备份 rc.local 失败"
         fi
 
-        cat > "$RCLOCAL" << EOF
-#!/bin/bash
-# OpenTracker 网络优化 (由 optimize.sh 自动生成)
-for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_cpus; do
-    [ -f "\$i" ] && echo "${RPS_MASK}" > "\$i" 2>/dev/null
-done
-[ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo ${QUEUE_COUNT:-1} > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-for i in /sys/class/net/${DEFAULT_NIC}/queues/rx-*/rps_flow_cnt; do
-    [ -f "\$i" ] && echo "4096" > "\$i" 2>/dev/null
-done
-exit 0
-EOF
+        # 删除本脚本上次写入的标记块
+        sed -i '/# >>> OpenTracker optimize >>>/,/# <<< OpenTracker optimize <<</d' "$RCLOCAL" 2>/dev/null || true
+
+        if [ ! -f "$RCLOCAL" ]; then
+            printf '#!/bin/bash\n' > "$RCLOCAL"
+        fi
+
+        # 若已有结尾的 exit 0，必须把调用插在它之前，否则不会执行
+        if grep -qE '^[[:space:]]*exit[[:space:]]+0[[:space:]]*$' "$RCLOCAL" 2>/dev/null; then
+            awk -v script="$OPTIMIZE_SCRIPT" '
+                /^[[:space:]]*exit[[:space:]]+0[[:space:]]*$/ && !inserted {
+                    print "# >>> OpenTracker optimize >>>";
+                    print "bash " script;
+                    print "# <<< OpenTracker optimize <<<";
+                    inserted = 1
+                }
+                { print }
+            ' "$RCLOCAL" > "${RCLOCAL}.tmp" && mv "${RCLOCAL}.tmp" "$RCLOCAL"
+        else
+            {
+                echo "# >>> OpenTracker optimize >>>"
+                echo "bash ${OPTIMIZE_SCRIPT}"
+                echo "# <<< OpenTracker optimize <<<"
+            } >> "$RCLOCAL"
+        fi
 
         chmod +x "$RCLOCAL" 2>/dev/null || warn "设置 rc.local 可执行权限失败"
         info "已配置 rc.local 开机自启"
@@ -806,15 +832,7 @@ verify_optimization() {
     check_sysctl_ge "net.core.rmem_default" "2097152" "rmem_default"
     check_sysctl_ge "net.core.wmem_default" "2097152" "wmem_default"
     check_sysctl_ge "net.core.optmem_max" "65536" "optmem_max"
-    check_sysctl_eq "net.ipv4.tcp_tw_reuse" "1" "tcp_tw_reuse"
-    check_sysctl_ge "net.ipv4.tcp_fin_timeout" "15" "tcp_fin_timeout (<=15)"
-    # tcp_fin_timeout 特殊: 值越小越好，需要反转判断
-    if check_sysctl_param "net.ipv4.tcp_fin_timeout"; then
-        actual=$(sysctl -n net.ipv4.tcp_fin_timeout 2>/dev/null)
-        if [ -n "$actual" ] && [ "$actual" -le 15 ] 2>/dev/null; then
-            : # 已经在上面 check_sysctl_ge 里处理了
-        fi
-    fi
+    # tcp_tw_reuse / tcp_fin_timeout / ip_local_port_range 不再修改（见 optimize_sysctl）
     check_sysctl_ge "net.ipv4.tcp_keepalive_time" "600" "tcp_keepalive_time"
 
     # tcp_rmem / tcp_wmem (多值参数，比较最小值)

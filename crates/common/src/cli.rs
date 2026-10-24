@@ -1,6 +1,3 @@
-use std::fs::File;
-use std::io::Read;
-
 use anyhow::Context;
 use aquatic_toml_config::TomlConfig;
 use git_testament::{git_testament, CommitKind};
@@ -126,9 +123,15 @@ where
             Err(opt_err) => {
                 let gen_info = || format!("{}\n\nUsage: {} [OPTIONS]", app_title, app_path);
 
-                print_help(gen_info, opt_err);
+                // Print usage; for a genuine argument error, return it so the
+                // process exits with a non-zero status. `--help` is not an
+                // error and exits successfully.
+                print_help(gen_info, None);
 
-                return Ok(());
+                return match opt_err {
+                    Some(error) => Err(anyhow::anyhow!(error)),
+                    None => Ok(()),
+                };
             }
         }
     };
@@ -184,15 +187,16 @@ fn config_from_toml_file<T>(path: String) -> anyhow::Result<T>
 where
     T: DeserializeOwned,
 {
-    let mut file = File::open(path.clone())
-        .with_context(|| format!("Couldn't open config file {}", path.clone()))?;
-
-    let mut data = String::new();
-
-    file.read_to_string(&mut data)
+    let bytes = std::fs::read(&path)
         .with_context(|| format!("Couldn't read config file {}", path.clone()))?;
 
-    toml::from_str(&data).with_context(|| format!("Couldn't parse config file {}", path.clone()))
+    // Lossy decoding plus BOM stripping: config files are often edited on
+    // Windows or contain a comment in a local code page. Neither should turn a
+    // valid configuration into a startup failure.
+    let data = String::from_utf8_lossy(&bytes);
+    let data = data.strip_prefix('\u{feff}').unwrap_or(&data);
+
+    toml::from_str(data).with_context(|| format!("Couldn't parse config file {}", path.clone()))
 }
 
 fn default_config_as_toml<T>() -> String
@@ -252,4 +256,41 @@ fn get_commit_info() -> String {
 
 fn first_8_chars(input: &str) -> String {
     input.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unknown_argument_is_an_error() {
+        let result = Options::parse_args(["--definitely-not-an-option".to_string()].into_iter());
+
+        assert!(matches!(result, Err(Some(_))));
+    }
+
+    #[test]
+    fn test_help_is_not_an_error() {
+        let result = Options::parse_args(["--help".to_string()].into_iter());
+
+        assert!(matches!(result, Err(None)));
+    }
+
+    #[test]
+    fn test_config_file_with_bom_and_non_utf8_comment() {
+        #[derive(Deserialize)]
+        struct TestConfig {
+            value: u32,
+        }
+
+        let path = std::env::temp_dir().join("aquatic_cli_config_bom_test.toml");
+        // BOM, a GBK comment and a valid value.
+        std::fs::write(&path, b"\xef\xbb\xbf# \xc9\xa8\xc3\xe8\xc6\xf7\nvalue = 7\n").unwrap();
+
+        let config: TestConfig = config_from_toml_file(path.to_string_lossy().into_owned()).unwrap();
+
+        assert_eq!(config.value, 7);
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

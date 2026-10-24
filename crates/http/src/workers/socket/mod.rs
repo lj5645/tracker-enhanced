@@ -18,7 +18,7 @@ use futures_lite::StreamExt;
 use glommio::channels::channel_mesh::{MeshBuilder, Partial, Role, Senders};
 use glommio::channels::local_channel::{new_bounded, LocalReceiver, LocalSender};
 use glommio::net::{TcpListener, TcpStream};
-use glommio::timer::TimerActionRepeat;
+use glommio::timer::{sleep, TimerActionRepeat};
 use glommio::{enclose, prelude::*};
 use slotmap::HopSlotMap;
 
@@ -138,7 +138,9 @@ impl ListenerState {
                     if self.config.network.max_connections_per_worker > 0
                         && current_connections >= self.config.network.max_connections_per_worker
                     {
-                        ::log::warn!(
+                        // Debug level: under a connection storm this would
+                        // otherwise flood the log once per rejected connection.
+                        ::log::debug!(
                             "Connection limit reached ({}/{}), rejecting new connection",
                             current_connections,
                             self.config.network.max_connections_per_worker
@@ -179,6 +181,11 @@ impl ListenerState {
                 }
                 Err(err) => {
                     ::log::error!("accept connection: {:?}", err);
+
+                    // Back off briefly: persistent accept errors (for example
+                    // EMFILE under a file-descriptor exhaustion attack) would
+                    // otherwise spin this loop at full speed.
+                    sleep(Duration::from_millis(100)).await;
                 }
             }
         }
@@ -302,17 +309,29 @@ fn create_tcp_listener(
         .set_reuse_port(true)
         .with_context(|| "socket: set reuse port")?;
 
-    // Set socket buffer sizes
+    // Allow restarting quickly after a crash without waiting for sockets in
+    // TIME_WAIT to disappear.
+    socket
+        .set_reuse_address(true)
+        .with_context(|| "socket: set reuse address")?;
+
+    // Buffer sizes are a performance tuning knob, not a correctness
+    // requirement: report a failure and keep going rather than refusing to
+    // start (the OS default still works).
     if config.network.socket_recv_buffer_size > 0 {
-        socket
-            .set_recv_buffer_size(config.network.socket_recv_buffer_size)
-            .with_context(|| "socket: set recv buffer size")?;
+        let size = config.network.socket_recv_buffer_size;
+
+        if let Err(err) = socket.set_recv_buffer_size(size.min(i32::MAX as usize)) {
+            ::log::warn!("socket: set recv buffer size to {}: {}", size, err);
+        }
     }
 
     if config.network.socket_send_buffer_size > 0 {
-        socket
-            .set_send_buffer_size(config.network.socket_send_buffer_size)
-            .with_context(|| "socket: set send buffer size")?;
+        let size = config.network.socket_send_buffer_size;
+
+        if let Err(err) = socket.set_send_buffer_size(size.min(i32::MAX as usize)) {
+            ::log::warn!("socket: set send buffer size to {}: {}", size, err);
+        }
     }
 
     socket
@@ -342,59 +361,60 @@ fn set_tcp_keepalive(stream: &TcpStream, config: &Config) -> anyhow::Result<()> 
 
     let fd = stream.as_raw_fd();
 
-    let idle_secs = config.network.tcp_keepalive_idle_secs;
-    let interval_secs = config.network.tcp_keepalive_interval_secs;
-    let probes = config.network.tcp_keepalive_probes;
+    set_keepalive_option(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1)
+        .context("set SO_KEEPALIVE")?;
 
-    unsafe {
-        let enable: libc::c_int = 1;
-        let result = libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_KEEPALIVE,
-            &enable as *const _ as *const _,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        if result != 0 {
-            return Err(anyhow::anyhow!("set SO_KEEPALIVE failed"));
-        }
-
-        let idle: libc::c_int = idle_secs as libc::c_int;
-        let result = libc::setsockopt(
-            fd,
-            libc::IPPROTO_TCP,
+    // The tuning knobs are best-effort: some kernels do not support all of
+    // them, and keepalive still works with the system defaults. Values are
+    // clamped to c_int because the configuration accepts any u64/u32.
+    for (name, value, label) in [
+        (
             libc::TCP_KEEPIDLE,
-            &idle as *const _ as *const _,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        if result != 0 {
-            return Err(anyhow::anyhow!("set TCP_KEEPIDLE failed"));
-        }
-
-        let interval: libc::c_int = interval_secs as libc::c_int;
-        let result = libc::setsockopt(
-            fd,
-            libc::IPPROTO_TCP,
+            clamp_c_int(config.network.tcp_keepalive_idle_secs),
+            "TCP_KEEPIDLE",
+        ),
+        (
             libc::TCP_KEEPINTVL,
-            &interval as *const _ as *const _,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        if result != 0 {
-            return Err(anyhow::anyhow!("set TCP_KEEPINTVL failed"));
-        }
-
-        let cnt: libc::c_int = probes as libc::c_int;
-        let result = libc::setsockopt(
-            fd,
-            libc::IPPROTO_TCP,
+            clamp_c_int(config.network.tcp_keepalive_interval_secs),
+            "TCP_KEEPINTVL",
+        ),
+        (
             libc::TCP_KEEPCNT,
-            &cnt as *const _ as *const _,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        if result != 0 {
-            return Err(anyhow::anyhow!("set TCP_KEEPCNT failed"));
+            clamp_c_int(config.network.tcp_keepalive_probes as u64),
+            "TCP_KEEPCNT",
+        ),
+    ] {
+        if let Err(err) = set_keepalive_option(fd, libc::IPPROTO_TCP, name, value) {
+            ::log::debug!("set {} failed: {}", label, err);
         }
     }
 
     Ok(())
+}
+
+fn clamp_c_int(value: u64) -> libc::c_int {
+    value.min(libc::c_int::MAX as u64) as libc::c_int
+}
+
+fn set_keepalive_option(
+    fd: libc::c_int,
+    level: libc::c_int,
+    name: libc::c_int,
+    value: libc::c_int,
+) -> ::std::io::Result<()> {
+    let result = unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            &value as *const _ as *const _,
+            ::std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+
+    if result != 0 {
+        Err(::std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }

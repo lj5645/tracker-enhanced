@@ -139,7 +139,10 @@ path = "./ip-ban-list.txt"
 [client_ban]
 mode = "on"
 path = "./client-ban-list.txt"
+ban_vampire_clients = true   # 同时启用内置吸血客户端前缀（-xl/-sd/-qd/-bn/-bc 等）
 ```
+
+> `ban_vampire_clients = false` 时只使用列表文件中的规则，内置前缀不再生效。
 
 ### 客户端白名单
 
@@ -216,6 +219,35 @@ flush_interval_secs = 60    # 批量写入文件间隔（秒），写入后自�
 > 使用 `ban_duration_secs = 0`（永久封禁）时，`ban_list_path` 必须与
 > `[ip_ban] path` 完全一致，否则写入的 IP 不会被重新加载，服务会拒绝启动并给出提示。
 > 临时封禁只保存在内存中，不会写入文件。
+>
+> 示例配置中 `auto_ban.enabled` 默认为 `false`：自动封禁依赖各项过滤器计数，
+> 过滤器一旦误判（例如把正常客户端识别为爬虫），大量正常用户会在短时间内被
+> 永久封禁。请先观察日志确认过滤结果，再启用自动封禁。
+
+### 反向代理与可信代理
+
+HTTP Tracker 位于 nginx/CDN 等反向代理之后时，需要同时配置：
+
+```toml
+[network]
+runs_behind_reverse_proxy = true
+reverse_proxy_ip_header_name = "X-Forwarded-For"
+
+[trusted_proxies]
+enabled = true
+path = "./trusted-proxies.txt"
+```
+
+`trusted-proxies.txt` 每行写一个代理 IP 或 CIDR（如 `127.0.0.1/32`、`10.0.0.0/8`）。
+
+- 只有连接来自列表中的代理时，才会读取 `X-Forwarded-For`；其他来源的同名
+  头部会被忽略，使用 socket 源地址，防止客户端伪造 IP 绕过封禁。
+- 多级代理时取“从右往左第一个不在可信列表中的地址”，而不是简单取最右或
+  最左地址：最右项是代理追加的，最左项可能由客户端提供。
+- `runs_behind_reverse_proxy = true` 但 `trusted_proxies.enabled = false` 时
+  程序拒绝启动；`enabled = true` 但列表为空同样拒绝启动。
+
+WebSocket 服务也会在握手阶段按同样的规则解析 `X-Forwarded-For`。
 
 ### 性能优化配置
 
@@ -238,6 +270,10 @@ direction = "ascending"
 core_offset = 0
 ```
 
+> `tcp_keepalive*`、`socket_recv_buffer_size`、`socket_send_buffer_size` 仅 HTTP
+> 服务支持。WebSocket 服务（长连接）使用 `max_connections_per_worker` 限制每个
+> worker 的并发连接数（默认 100000，0 表示不限制），UDP 服务没有连接概念。
+
 ## 热重载配置
 
 通过信号热重载配置，无需重启服务：
@@ -259,7 +295,8 @@ kill -SIGUSR2 $(pgrep aquatic_http)
 ```toml
 [metrics]
 run_prometheus_endpoint = true
-prometheus_endpoint_address = "0.0.0.0:9000"
+# 指标端点没有认证，默认只监听本机；远程抓取请通过防火墙或反向代理限制来源
+prometheus_endpoint_address = "127.0.0.1:9000"
 torrent_count_update_interval = 300
 ```
 

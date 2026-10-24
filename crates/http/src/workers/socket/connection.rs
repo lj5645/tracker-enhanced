@@ -11,6 +11,7 @@ use aquatic_common::client_ban::{create_client_ban_list_cache, ClientBanListCach
 use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhitelistCache};
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
+use aquatic_common::trusted_proxies::TrustedProxiesArcSwap;
 use aquatic_common::auto_ban::{AutoBanReason, AutoBanTracker};
 use aquatic_common::{canonical_ip, CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
@@ -32,17 +33,37 @@ use crate::config::Config;
 
 #[cfg(feature = "metrics")]
 use super::peer_addr_to_ip_version_str;
-use super::request::{parse_request, RequestParseError};
+use super::request::{parse_request, ParsedRequest, RequestParseError};
 
 const REQUEST_BUFFER_SIZE: usize = 2048;
-const RESPONSE_BUFFER_SIZE: usize = 4096;
 
 const RESPONSE_HEADER_A: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: ";
 const RESPONSE_HEADER_B: &[u8] = b"        ";
 const RESPONSE_HEADER_C: &[u8] = b"\r\n\r\n";
 
+const BAD_REQUEST_RESPONSE: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nBad Request\n";
+
 static RESPONSE_HEADER: Lazy<Vec<u8>> =
     Lazy::new(|| [RESPONSE_HEADER_A, RESPONSE_HEADER_B, RESPONSE_HEADER_C].concat());
+
+/// Size of the response buffer needed for the configured protocol limits.
+///
+/// A fixed buffer silently truncated large scrape or announce responses (the
+/// bencode writer then returned a write error and the connection was dropped).
+/// Deriving the size from the configuration makes every response that the
+/// request parser accepts fit.
+fn response_buffer_size(config: &Config) -> usize {
+    // Worst case per entry: three 64-bit integers, the peer id, IP and port for
+    // announces; three integers and an info hash for scrapes.
+    let announce_body = 256usize.saturating_add(config.protocol.max_peers.saturating_mul(96));
+    let scrape_body = 64usize.saturating_add(config.protocol.max_scrape_torrents.saturating_mul(112));
+
+    RESPONSE_HEADER
+        .len()
+        .saturating_add(2)
+        .saturating_add(announce_body.max(scrape_body))
+}
 
 /// Extract the request target from the request line, for example
 /// `/announce?info_hash=...` from `GET /announce?info_hash=... HTTP/1.1`.
@@ -69,6 +90,8 @@ pub enum ConnectionError {
     Inactive,
     #[error("socket peer addr extraction failed")]
     NoSocketPeerAddr(String),
+    #[error("malformed request: {0}")]
+    BadRequest(String),
     #[error("request buffer full")]
     RequestBufferFull,
     #[error("response buffer full")]
@@ -104,7 +127,7 @@ pub(super) async fn run_connection(
     let request_filter = RequestFilter::new();
     let request_buffer = Box::new([0u8; REQUEST_BUFFER_SIZE]);
 
-    let mut response_buffer = Box::new([0; RESPONSE_BUFFER_SIZE]);
+    let mut response_buffer = vec![0u8; response_buffer_size(&config)].into_boxed_slice();
 
     response_buffer[..RESPONSE_HEADER.len()].copy_from_slice(&RESPONSE_HEADER);
 
@@ -112,27 +135,35 @@ pub(super) async fn run_connection(
         .peer_addr()
         .map_err(|err| ConnectionError::NoSocketPeerAddr(err.to_string()))?;
 
-    let trusted_proxies = state.trusted_proxies.load();
     // A dual-stack listener reports IPv4 proxies as ::ffff:a.b.c.d, while the
     // trusted proxy file normally contains plain IPv4 addresses.
-    let is_trusted_proxy = config.trusted_proxies.enabled
-        && trusted_proxies.is_trusted(canonical_ip(remote_addr.ip()));
+    let is_trusted_proxy = {
+        let trusted_proxies = state.trusted_proxies.load();
 
-    let opt_peer_addr = if config.network.runs_behind_reverse_proxy {
-        if config.trusted_proxies.enabled && !is_trusted_proxy {
+        config.trusted_proxies.enabled
+            && trusted_proxies.is_trusted(canonical_ip(remote_addr.ip()))
+    };
+
+    // Only a trusted proxy may set the forwarded-for address. For every other
+    // peer the header is ignored and the socket address is used, so a client
+    // cannot choose the address it is tracked and banned under.
+    let trust_forwarded_ip = config.network.runs_behind_reverse_proxy && is_trusted_proxy;
+
+    let opt_peer_addr = if trust_forwarded_ip {
+        None
+    } else {
+        if config.network.runs_behind_reverse_proxy {
             log::warn!(
                 "Request from untrusted proxy IP: {}, using socket address instead of X-Forwarded-For",
                 remote_addr.ip()
             );
-            Some(CanonicalSocketAddr::new(remote_addr))
-        } else {
-            None
         }
-    } else {
+
         Some(CanonicalSocketAddr::new(remote_addr))
     };
 
     let peer_port = remote_addr.port();
+    let trusted_proxies = state.trusted_proxies.clone();
 
     if let Some(tls_config) = opt_tls_config {
         let tls_acceptor: TlsAcceptor = tls_config.load_full().into();
@@ -157,6 +188,8 @@ pub(super) async fn run_connection(
             stream,
             worker_index,
             auto_ban_tracker,
+            trusted_proxies,
+            trust_forwarded_ip,
         );
 
         conn.run(opt_peer_addr).await
@@ -177,6 +210,8 @@ pub(super) async fn run_connection(
             stream,
             worker_index,
             auto_ban_tracker,
+            trusted_proxies,
+            trust_forwarded_ip,
         );
 
         conn.run(opt_peer_addr).await
@@ -196,10 +231,12 @@ struct Connection<S> {
     peer_port: u16,
     request_buffer: Box<[u8; REQUEST_BUFFER_SIZE]>,
     request_buffer_position: usize,
-    response_buffer: Box<[u8; RESPONSE_BUFFER_SIZE]>,
+    response_buffer: Box<[u8]>,
     stream: S,
     worker_index_string: String,
     auto_ban_tracker: Option<Arc<AutoBanTracker>>,
+    trusted_proxies: Arc<TrustedProxiesArcSwap>,
+    trust_forwarded_ip: bool,
 }
 
 impl<S> Connection<S>
@@ -219,10 +256,12 @@ where
         server_start_instant: ServerStartInstant,
         peer_port: u16,
         request_buffer: Box<[u8; REQUEST_BUFFER_SIZE]>,
-        response_buffer: Box<[u8; RESPONSE_BUFFER_SIZE]>,
+        response_buffer: Box<[u8]>,
         stream: S,
         worker_index: usize,
         auto_ban_tracker: Option<Arc<AutoBanTracker>>,
+        trusted_proxies: Arc<TrustedProxiesArcSwap>,
+        trust_forwarded_ip: bool,
     ) -> Self {
         Self {
             config,
@@ -241,6 +280,8 @@ where
             stream,
             worker_index_string: worker_index.to_string(),
             auto_ban_tracker,
+            trusted_proxies,
+            trust_forwarded_ip,
         }
     }
 
@@ -250,14 +291,26 @@ where
         opt_stable_peer_addr: Option<CanonicalSocketAddr>,
     ) -> Result<(), ConnectionError> {
         loop {
-            let (request, opt_peer_addr, opt_user_agent, raw_request) = self.read_request().await?;
+            let (request, opt_peer_addr, opt_user_agent, request_target) = match self.read_request().await {
+                Ok(request) => request,
+                Err(ConnectionError::BadRequest(message)) => {
+                    // Answer with a clear status and close: after a request that
+                    // does not parse, the connection is in an unknown state and
+                    // the remaining bytes cannot be framed.
+                    ::log::debug!("Malformed request: {}", message);
+                    self.write_bad_request().await?;
+
+                    break;
+                }
+                Err(err) => return Err(err),
+            };
 
             let peer_addr = opt_stable_peer_addr
                 .or(opt_peer_addr)
                 .ok_or(anyhow::anyhow!("Could not extract peer addr"))?;
 
             // Security checks
-            if let Some(response) = self.run_security_checks(&peer_addr, &opt_user_agent, &request, &raw_request)? {
+            if let Some(response) = self.run_security_checks(&peer_addr, &opt_user_agent, &request, &request_target)? {
                 self.write_response(&response, peer_addr).await?;
                 
                 if !self.config.network.keep_alive {
@@ -283,7 +336,7 @@ where
         peer_addr: &CanonicalSocketAddr,
         opt_user_agent: &Option<String>,
         request: &Request,
-        raw_request: &str,
+        request_target: &str,
     ) -> Result<Option<Response>, ConnectionError> {
         let peer_ip = peer_addr.get().ip();
 
@@ -320,12 +373,10 @@ where
         {
             let filter_config = &self.config.request_filter;
 
-            // Check only the request target, not the whole request including
-            // headers: header values may legitimately contain characters that
-            // look like SQL or traversal patterns, and scanning them made
-            // filter results depend on unrelated headers.
-            let request_target = extract_request_target(raw_request);
-
+            // Only the request target is checked, not the whole request
+            // including headers: header values may legitimately contain
+            // characters that look like SQL or traversal patterns, and scanning
+            // them made filter results depend on unrelated headers.
             if !self.request_filter.is_allowed_with_config(
                 request_target,
                 opt_user_agent.as_deref(),
@@ -377,7 +428,25 @@ where
             }
         }
 
-        // 3. Client whitelist check
+        // 3. Client ban check (for announce requests)
+        //
+        // Checked before the whitelist so that an explicitly banned client is
+        // reported as banned even if it would also fail the whitelist.
+        if self.config.client_ban.mode.is_on() {
+            if let Some(peer_id) = opt_peer_id.as_deref() {
+                if self.client_ban_list_cache.load().is_banned(peer_id) {
+                    ::log::debug!("Client banned: {}", peer_id);
+                    if let Some(tracker) = &self.auto_ban_tracker {
+                        tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
+                    }
+                    return Ok(Some(Response::Failure(FailureResponse {
+                        failure_reason: "Client banned".into(),
+                    })));
+                }
+            }
+        }
+
+        // 4. Client whitelist check
         if self.config.client_whitelist.mode.is_on()
             && !self
                 .client_whitelist_cache
@@ -397,30 +466,48 @@ where
             })));
         }
 
-        // 4. Client ban check (for announce requests)
-        if self.config.client_ban.mode.is_on() {
-            if let Some(peer_id) = opt_peer_id.as_deref() {
-                if self.client_ban_list_cache.load().is_banned(peer_id) {
-                    ::log::debug!("Client banned: {}", peer_id);
-                    if let Some(tracker) = &self.auto_ban_tracker {
-                        tracker.record_violation(&peer_ip, AutoBanReason::ClientBanned);
-                    }
-                    return Ok(Some(Response::Failure(FailureResponse {
-                        failure_reason: "Client banned".into(),
-                    })));
-                }
-            }
-        }
-
         Ok(None)
     }
 
     async fn read_request(
         &mut self,
     ) -> Result<(Request, Option<CanonicalSocketAddr>, Option<String>, String), ConnectionError> {
-        self.request_buffer_position = 0;
-
         loop {
+            // Bytes left over from the previous request may already contain a
+            // complete pipelined request, so parse before reading again.
+            if self.request_buffer_position > 0 {
+                let parsed = {
+                    let trusted_proxies = self.trusted_proxies.load();
+
+                    parse_request(
+                        &self.config,
+                        self.trust_forwarded_ip,
+                        &trusted_proxies,
+                        &self.request_buffer[..self.request_buffer_position],
+                    )
+                };
+
+                match parsed {
+                    Ok(parsed) => return self.finish_request(parsed),
+                    Err(RequestParseError::MoreDataNeeded) => (),
+                    Err(RequestParseError::RequiredPeerIpHeaderMissing(err)) => {
+                        ::log::warn!(
+                            "Tracker configured as running behind reverse proxy, but no corresponding IP header set in request. Please check your reverse proxy setup as well as your aquatic configuration. Error: {:#}",
+                            err
+                        );
+                        return Err(ConnectionError::Other(anyhow::anyhow!(
+                            "required peer ip header missing or invalid"
+                        )));
+                    }
+                    Err(RequestParseError::Other(err)) => {
+                        // A complete but malformed request cannot be framed.
+                        // Closing without an answer leaves clients guessing, so
+                        // report it as a bad request instead.
+                        return Err(ConnectionError::BadRequest(format!("{:#}", err)));
+                    }
+                }
+            }
+
             if self.request_buffer_position == self.request_buffer.len() {
                 return Err(ConnectionError::RequestBufferFull);
             }
@@ -436,43 +523,53 @@ where
             }
 
             self.request_buffer_position += bytes_read;
-
-            let buffer_slice = &self.request_buffer[..self.request_buffer_position];
-
-            match parse_request(&self.config, buffer_slice) {
-                Ok(parsed) => {
-                    let opt_peer_addr = if self.config.network.runs_behind_reverse_proxy {
-                        let peer_ip = parsed
-                            .opt_peer_ip
-                            .expect("logic error: peer ip must have been extracted at this point");
-
-                        Some(CanonicalSocketAddr::new(SocketAddr::new(
-                            peer_ip,
-                            self.peer_port,
-                        )))
-                    } else {
-                        None
-                    };
-
-                    let raw_request = String::from_utf8_lossy(buffer_slice).to_string();
-
-                    return Ok((parsed.request, opt_peer_addr, parsed.opt_user_agent, raw_request));
-                }
-                Err(RequestParseError::MoreDataNeeded) => continue,
-                Err(RequestParseError::RequiredPeerIpHeaderMissing(err)) => {
-                    ::log::warn!(
-                        "Tracker configured as running behind reverse proxy, but no corresponding IP header set in request. Please check your reverse proxy setup as well as your aquatic configuration. Error: {:#}",
-                        err
-                    );
-                    return Err(ConnectionError::Other(anyhow::anyhow!(
-                        "required peer ip header missing or invalid"
-                    )));
-                }
-                Err(RequestParseError::Other(err)) => {
-                    ::log::debug!("Failed parsing request: {:#}", err);
-                }
-            }
         }
+    }
+
+    /// Convert a parsed request into the values used by the connection loop and
+    /// keep any bytes belonging to the next pipelined request.
+    fn finish_request(
+        &mut self,
+        parsed: ParsedRequest,
+    ) -> Result<(Request, Option<CanonicalSocketAddr>, Option<String>, String), ConnectionError> {
+        let consumed = parsed.consumed;
+        let position = self.request_buffer_position;
+
+        let request_target = {
+            let raw_request = String::from_utf8_lossy(&self.request_buffer[..consumed]);
+
+            extract_request_target(&raw_request).to_string()
+        };
+
+        let leftover = position - consumed;
+
+        if leftover > 0 {
+            let buffer: &mut [u8] = &mut self.request_buffer;
+
+            buffer.copy_within(consumed..position, 0);
+        }
+
+        self.request_buffer_position = leftover;
+
+        let opt_peer_addr = if self.trust_forwarded_ip {
+            let peer_ip = parsed.opt_peer_ip.ok_or_else(|| {
+                anyhow::anyhow!("logic error: peer ip must have been extracted at this point")
+            })?;
+
+            Some(CanonicalSocketAddr::new(SocketAddr::new(
+                peer_ip,
+                self.peer_port,
+            )))
+        } else {
+            None
+        };
+
+        Ok((
+            parsed.request,
+            opt_peer_addr,
+            parsed.opt_user_agent,
+            request_target,
+        ))
     }
 
     /// Take a request and:
@@ -520,11 +617,11 @@ where
 
                     let consumer_index = calculate_request_consumer_index(&self.config, info_hash);
 
-                    // Only fails when receiver is closed
+                    // Only fails when the receiving swarm worker is gone.
                     self.request_senders
                         .send_to(consumer_index, request)
                         .await
-                        .unwrap();
+                        .map_err(|_| ConnectionError::ResponseSenderClosed)?;
 
                     response_receiver
                         .connect()
@@ -575,11 +672,11 @@ where
                         response_sender,
                     };
 
-                    // Only fails when receiver is closed
+                    // Only fails when the receiving swarm worker is gone.
                     self.request_senders
                         .send_to(consumer_index, request)
                         .await
-                        .unwrap();
+                        .map_err(|_| ConnectionError::ResponseSenderClosed)?;
                 }
 
                 let pending_scrape_response = PendingScrapeResponse {
@@ -629,6 +726,16 @@ where
         }
     }
 
+    async fn write_bad_request(&mut self) -> Result<(), ConnectionError> {
+        self.stream
+            .write_all(BAD_REQUEST_RESPONSE)
+            .await
+            .with_context(|| "write bad request response")?;
+        self.stream.flush().await.with_context(|| "flush")?;
+
+        Ok(())
+    }
+
     async fn write_response(
         &mut self,
         response: &Response,
@@ -669,16 +776,20 @@ where
             let mut buf = ::itoa::Buffer::new();
             let content_len_bytes = buf.format(content_len).as_bytes();
 
+            if content_len_bytes.len() > RESPONSE_HEADER_B.len() {
+                return Err(ConnectionError::ResponseBufferFull);
+            }
+
             let start = RESPONSE_HEADER_A.len();
             let end = start + content_len_bytes.len();
 
             self.response_buffer[start..end].copy_from_slice(content_len_bytes);
         }
 
-        // Write buffer to stream
-
+        // Write buffer to stream. `write` may accept only part of the buffer,
+        // so a single call could produce a truncated response.
         self.stream
-            .write(&self.response_buffer[..position])
+            .write_all(&self.response_buffer[..position])
             .await
             .with_context(|| "write")?;
         self.stream.flush().await.with_context(|| "flush")?;
@@ -707,5 +818,47 @@ where
 }
 
 fn calculate_request_consumer_index(config: &Config, info_hash: InfoHash) -> usize {
-    (info_hash.0[0] as usize) % config.swarm_workers
+    // swarm_workers is validated to be at least one at startup; keep the
+    // modulo panic-free in case a caller skips validation.
+    (info_hash.0[0] as usize) % config.swarm_workers.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_response_buffer_holds_configured_limits() {
+        let config = Config::default();
+
+        let size = response_buffer_size(&config);
+
+        assert!(size > RESPONSE_HEADER.len() + 2);
+
+        // Large but valid configurations must not overflow the calculation.
+        let mut large = Config::default();
+        large.protocol.max_peers = usize::MAX / 2;
+        large.protocol.max_scrape_torrents = usize::MAX / 2;
+
+        assert!(response_buffer_size(&large) >= response_buffer_size(&config));
+    }
+
+    #[test]
+    fn test_extract_request_target() {
+        assert_eq!(
+            extract_request_target("GET /announce?info_hash=abc HTTP/1.1\r\nHost: x\r\n"),
+            "/announce?info_hash=abc"
+        );
+        assert_eq!(
+            extract_request_target("GET /scrape?info_hash=a\nHost: x\n"),
+            "/scrape?info_hash=a"
+        );
+        assert_eq!(extract_request_target("garbage"), "garbage");
+    }
+
+    #[test]
+    fn test_bad_request_response_is_well_formed() {
+        assert!(BAD_REQUEST_RESPONSE.starts_with(b"HTTP/1.1 400 "));
+        assert!(BAD_REQUEST_RESPONSE.ends_with(b"\r\n\r\nBad Request\n"));
+    }
 }

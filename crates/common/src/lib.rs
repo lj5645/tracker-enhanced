@@ -11,6 +11,7 @@ pub mod cpu_pinning;
 pub mod ip_ban;
 pub mod client_ban;
 pub mod client_whitelist;
+pub mod list_file;
 pub mod request_filter;
 pub mod privileges;
 pub mod trusted_proxies;
@@ -60,6 +61,71 @@ impl ServerStartInstant {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SecondsSinceServerStart(u32);
+
+/// Validate worker counts shared by all three services.
+///
+/// A socket worker count of zero means "one worker per available CPU" in the
+/// UDP service; applying the same rule everywhere keeps an accidental zero
+/// from producing a tracker that accepts no connections. Swarm workers are
+/// selected by modulo, so a zero count would panic on the first request and is
+/// rejected instead.
+pub fn validate_worker_counts(
+    socket_workers: &mut usize,
+    swarm_workers: Option<usize>,
+) -> anyhow::Result<()> {
+    if *socket_workers == 0 {
+        *socket_workers = std::thread::available_parallelism()
+            .map(Into::into)
+            .unwrap_or(1);
+
+        ::log::warn!(
+            "socket_workers was 0; using {} worker(s)",
+            *socket_workers
+        );
+    }
+
+    if let Some(swarm_workers) = swarm_workers {
+        if swarm_workers == 0 {
+            return Err(anyhow::anyhow!("swarm_workers must be at least 1 (got 0)"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Reject zero-second intervals that are used for sleeps or timers.
+///
+/// A zero interval turns a background loop into a busy loop that burns a CPU
+/// core and floods the log. `0` is only meaningful for optional features
+/// (such as `statistics.interval`), which callers validate separately.
+pub fn validate_interval(name: &str, seconds: u64) -> anyhow::Result<()> {
+    if seconds == 0 {
+        return Err(anyhow::anyhow!(
+            "{} must be at least 1 second (got 0)",
+            name
+        ));
+    }
+
+    Ok(())
+}
+
+/// ASCII-only case-insensitive substring search.
+///
+/// Matching the request filters and client lists in ASCII avoids lowercasing
+/// (and thereby allocating) untrusted request data on every request.
+pub fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+
+    haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
 
 /// Convert an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to plain IPv4.
 ///

@@ -82,6 +82,12 @@ impl WorkerIndex {
             Self::Util => config.core_offset() + socket_workers + swarm_workers,
         };
 
+        // hwloc can report no usable cores (for example inside a restricted
+        // container). Callers handle a zero core count by not pinning.
+        if num_cores == 0 {
+            return 0;
+        }
+
         let max_core_index = num_cores - 1;
 
         let ascending_index = ascending_index.min(max_core_index);
@@ -108,32 +114,63 @@ pub fn pin_current_if_configured_to<C: CpuPinningConfig>(
     if config.active() {
         let mut topology = Topology::new();
 
-        let core_cpu_sets: Vec<CpuSet> = topology
-            .objects_with_type(&ObjectType::Core)
-            .expect("hwloc: list cores")
-            .into_iter()
-            .map(|core| core.allowed_cpuset().expect("hwloc: get core cpu set"))
-            .collect();
+        // CPU pinning is an optimisation: a restricted container or an
+        // unsupported topology must not prevent the tracker from starting.
+        let core_cpu_sets: Vec<CpuSet> = match topology.objects_with_type(&ObjectType::Core) {
+            Ok(cores) => cores
+                .into_iter()
+                .filter_map(|core| core.allowed_cpuset())
+                .collect(),
+            Err(err) => {
+                ::log::warn!(
+                    "CPU pinning disabled: could not list cores: {:?}",
+                    err
+                );
+
+                return;
+            }
+        };
 
         let num_cores = core_cpu_sets.len();
+
+        if num_cores == 0 {
+            ::log::warn!("CPU pinning disabled: no usable cores reported by hwloc");
+
+            return;
+        }
 
         let core_index =
             worker_index.get_core_index(config, socket_workers, swarm_workers, num_cores);
 
-        let cpu_set = core_cpu_sets
-            .get(core_index)
-            .unwrap_or_else(|| panic!("get cpu set for core {}", core_index))
-            .to_owned();
+        let cpu_set = match core_cpu_sets.get(core_index) {
+            Some(cpu_set) => cpu_set.to_owned(),
+            None => {
+                ::log::warn!(
+                    "CPU pinning skipped: no cpu set for core {}",
+                    core_index
+                );
 
-        topology
-            .set_cpubind(cpu_set, CPUBIND_THREAD)
-            .unwrap_or_else(|err| panic!("bind thread to core {}: {:?}", core_index, err));
+                return;
+            }
+        };
 
-        ::log::info!(
-            "Pinned worker {:?} to cpu core {}",
-            worker_index,
-            core_index
-        );
+        match topology.set_cpubind(cpu_set, CPUBIND_THREAD) {
+            Ok(()) => {
+                ::log::info!(
+                    "Pinned worker {:?} to cpu core {}",
+                    worker_index,
+                    core_index
+                );
+            }
+            Err(err) => {
+                ::log::warn!(
+                    "Could not bind worker {:?} to core {}: {:?}",
+                    worker_index,
+                    core_index,
+                    err
+                );
+            }
+        }
     }
 }
 

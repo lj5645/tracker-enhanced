@@ -1,5 +1,5 @@
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aquatic_toml_config::TomlConfig;
@@ -8,6 +8,7 @@ use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::canonical_ip;
+use crate::list_file::read_list_file;
 
 #[cfg(test)]
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -82,35 +83,14 @@ pub struct IpBanList {
 }
 
 impl IpBanList {
-    pub fn create_from_path(path: &PathBuf) -> anyhow::Result<Self> {
-        // Read the file as bytes and decode lossily: a single non-UTF-8 byte
-        // (for example a comment written by a Windows editor in a local code
-        // page) would otherwise make the whole file fail to load, silently
-        // disabling every ban in it.
-        let bytes = std::fs::read(path)?;
-        let content = String::from_utf8_lossy(&bytes);
-
+    pub fn create_from_path(path: &Path) -> anyhow::Result<Self> {
         let mut list = Self::default();
 
-        for (index, line) in content.lines().enumerate() {
-            // Files written by Windows editors commonly start with a UTF-8 BOM,
-            // and operators often add trailing comments. Both would otherwise
-            // make the first (or every annotated) entry silently unbanned.
-            let line = line.trim_start_matches('\u{feff}');
-            let line = match line.split_once('#') {
-                Some((entry, _)) => entry,
-                None => line,
-            };
-            let line = line.trim();
-
-            if line.is_empty() {
-                continue;
-            }
-
-            if let Err(err) = list.add_entry(line) {
+        for (line_number, line) in read_list_file(path)? {
+            if let Err(err) = list.add_entry(&line) {
                 ::log::warn!(
                     "Invalid IP ban entry on line {} ('{}'): {:#}",
-                    index + 1,
+                    line_number,
                     line,
                     err,
                 );

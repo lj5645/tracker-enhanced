@@ -10,6 +10,24 @@
 - **HTTP 转发头名称大小写敏感**：`reverse_proxy_ip_header_name` 之前按字节严格比较，代理发送小写 `x-forwarded-for` 时解析失败。现在按 HTTP 规范忽略大小写
 - **IP 封禁列表解析**：支持 UTF-8 BOM、行尾 `#` 注释和 CRLF；文件按字节读取并做有损解码，单个非 UTF-8 字节（如用 GBK 写的中文注释）不会再让整个封禁列表加载失败；解析失败的行会带上行号告警
 - **私有 IP 过滤**：同样对 IPv4 映射地址做规范化，双栈监听下不再漏判
+- **UDP 反射放大与错误计数**：连接 ID 校验之前不再执行会记录违规的检查，伪造源地址的包无法把任意 IP 打进自动封禁；封禁检查和 Connect 的私有 IP 拒绝也不会再计数
+- **HTTP X-Forwarded-For 伪造**：只有来自可信代理的连接才会采用该头部；`runs_behind_reverse_proxy = true` 但未启用 `trusted_proxies` 时拒绝启动
+- **可信代理链路解析**：多级代理时取“从右往左第一个不受信任的地址”，而不是简单取最右项；`trusted_proxies.enabled = true` 但文件为空时拒绝启动
+- **封禁/白名单列表解析统一**：`client_ban`、`client_whitelist`、`access_list`、`ip_ban`、`trusted_proxies` 共用同一个读取器，统一支持 BOM、CRLF、行尾注释和非 UTF-8 字节，单行错误附带行号且不影响其他条目
+- **自动封禁文件写入**：追加前检查文件是否以换行结尾，避免新封禁与最后一行粘连；永久封禁改为显式标记，不再用“一年后过期”模拟；临时封禁过期后重置计数；新增 `client_ban.ban_vampire_clients` 开关
+- **HTTP 响应截断**：改用 `write_all` 写响应，响应缓冲区大小按 `max_peers` / `max_scrape_torrents` 计算，配置较大的抓取请求不会再因固定 4096 字节缓冲区而断开；管道化请求剩余字节会被保留
+- **HTTP 畸形请求**：返回 `400 Bad Request` 并关闭连接，而不是静默断开；客户端封禁检查提前到白名单之前
+- **启动校验**：HTTP/WS 的 `swarm_workers = 0`、为 0 的清理/指标间隔、非法 keepalive 参数会在启动时报错；`socket_workers = 0` 统一为“按 CPU 数”
+- **HTTP 监听健壮性**：设置 `SO_REUSEADDR`；接受连接失败后短暂退避；缓冲区设置失败只告警不阻止启动；连接数上限日志降为 debug
+- **WebSocket 健壮性**：新增 `network.max_connections_per_worker`；消息转发失败、清理通知失败、任务创建失败不再 `unwrap`/`expect` 崩溃；TLS 热重载同时比较证书和私钥
+- **请求过滤误判**：SQL 关键字按词边界匹配并移除单字符模式，通用 HTTP 库不再被当作爬虫，私有地址范围补全；匹配过程不再为每个请求分配小写副本
+- **CLI 与 CPU 绑定**：未知参数以非零状态退出；配置文件的 BOM 和非 UTF-8 注释不再导致解析失败；hwloc 无法获取核心或绑定失败时只告警，不再 panic
+
+### 变更
+
+- 示例配置默认更保守：自动封禁默认关闭并注明风险，`filter_crawlers` / `filter_missing_user_agent` 默认关闭，Prometheus 端点默认只监听 `127.0.0.1`；补充 `[trusted_proxies]`、`[privileges]`、`ban_vampire_clients` 和 WS `max_connections_per_worker`
+- `scripts/optimize.sh`：非交互运行时不再阻塞等待输入；不再删除管理员已有的 `nofile` 配置；去掉会干扰其他服务的 `tcp_tw_reuse`、`tcp_fin_timeout`、`ip_local_port_range`；systemd 单元改为调用独立脚本（不再生成非法的多行 `ExecStart`）；`rc.local` 只在标记块内追加并保留原内容
+- Runtime Smoke：启动前检查端口占用，UDP 就绪检测改为确认端口已绑定，启动失败时关闭日志句柄；工作流在推送到 `master` 时也会运行
 
 ### 测试
 

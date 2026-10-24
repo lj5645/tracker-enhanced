@@ -66,6 +66,46 @@ def tcp_ready(port, timeout=20.0, host="127.0.0.1"):
     return False
 
 
+def assert_port_free(port, tcp, host="127.0.0.1"):
+    """Fail early with a clear message instead of letting a stale process
+    silently absorb the test traffic."""
+    kind = socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM
+    with socket.socket(socket.AF_INET, kind) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as err:
+            raise RuntimeError(f"port {host}:{port} is already in use: {err}") from err
+
+
+def udp_port_bound(port, timeout=10.0):
+    """Wait until the UDP port is actually bound.
+
+    Sending a connect request is not usable here: several scenarios ban
+    127.0.0.1, so a correct server may legitimately stay silent. Reading the
+    kernel socket table works regardless of the ban configuration.
+    """
+    wanted = f"{port:04X}"
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        for table in ("/proc/net/udp", "/proc/net/udp6"):
+            try:
+                lines = Path(table).read_text(encoding="ascii", errors="replace").splitlines()
+            except OSError:
+                continue
+
+            for line in lines[1:]:
+                fields = line.split()
+                # fields[1] is local_address, e.g. "0100007F:1B39"
+                if len(fields) > 1 and fields[1].rsplit(":", 1)[-1].upper() == wanted:
+                    return True
+
+        time.sleep(0.1)
+
+    return False
+
+
 class Server:
     def __init__(self, name, binary, workdir, port, tcp, host="127.0.0.1"):
         self.name = name
@@ -75,25 +115,25 @@ class Server:
         self.tcp = tcp
         self.host = host
         self.log_path = workdir / "server.log"
+        assert_port_free(port, tcp)
         self.log_file = open(self.log_path, "wb")
-        self.proc = subprocess.Popen(
-            [self.binary, "-c", "config.toml"],
-            cwd=str(workdir),
-            stdout=self.log_file,
-            stderr=subprocess.STDOUT,
-        )
+        try:
+            self.proc = subprocess.Popen(
+                [self.binary, "-c", "config.toml"],
+                cwd=str(workdir),
+                stdout=self.log_file,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            # Do not leak the file handle when the binary cannot be started.
+            self.log_file.close()
+            raise
 
     def wait_ready(self):
         if self.tcp:
             ready = tcp_ready(self.port, host=self.host)
         else:
-            deadline = time.time() + 10.0
-            ready = False
-            while time.time() < deadline:
-                if self.proc.poll() is not None:
-                    break
-                time.sleep(0.3)
-                ready = True
+            ready = udp_port_bound(self.port)
         if not ready or self.proc.poll() is not None:
             raise RuntimeError(f"{self.name}: server failed to start\n{self.log_tail()}")
 
@@ -1078,17 +1118,20 @@ def main():
             shutil.rmtree(workdir)
         workdir.mkdir(parents=True)
         s["config"](workdir, s["port"])
-        server = Server(s["name"], binaries[s["service"]], workdir, s["port"],
-                        s["tcp"], host=s["host"])
+        server = None
         try:
+            server = Server(s["name"], binaries[s["service"]], workdir, s["port"],
+                            s["tcp"], host=s["host"])
             server.wait_ready()
             s["probe"](server, workdir)
         except Exception as exc:  # noqa: BLE001 - report and continue
             failed.append(s["name"])
             print(f"FAIL {s['name']}: {exc}", file=sys.stderr)
-            print(server.log_tail(), file=sys.stderr)
+            if server is not None:
+                print(server.log_tail(), file=sys.stderr)
         finally:
-            server.stop()
+            if server is not None:
+                server.stop()
 
     print(f"\n{PASS} checks passed, {FAIL} assertions failed")
     if failed:

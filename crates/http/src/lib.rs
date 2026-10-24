@@ -8,6 +8,7 @@ use aquatic_common::{
     privileges::PrivilegeDropper,
     rustls_config::create_rustls_config,
     auto_ban::{validate_auto_ban_config, AutoBanTracker},
+    validate_interval, validate_worker_counts,
     WorkerType,
     ServerStartInstant,
 };
@@ -34,12 +35,56 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const SHARED_CHANNEL_SIZE: usize = 4096;
 
-pub fn run(config: Config) -> ::anyhow::Result<()> {
+pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     let mut signals = Signals::new([SIGUSR1, SIGUSR2])?;
 
     if !(config.network.use_ipv4 || config.network.use_ipv6) {
         return Result::Err(anyhow::anyhow!(
             "Both use_ipv4 and use_ipv6 can not be set to false"
+        ));
+    }
+
+    validate_worker_counts(&mut config.socket_workers, Some(config.swarm_workers))?;
+
+    validate_interval(
+        "cleaning.torrent_cleaning_interval",
+        config.cleaning.torrent_cleaning_interval,
+    )?;
+    validate_interval(
+        "cleaning.connection_cleaning_interval",
+        config.cleaning.connection_cleaning_interval,
+    )?;
+
+    #[cfg(feature = "metrics")]
+    validate_interval(
+        "metrics.torrent_count_update_interval",
+        config.metrics.torrent_count_update_interval,
+    )?;
+
+    if config.network.tcp_keepalive {
+        validate_interval(
+            "network.tcp_keepalive_idle_secs",
+            config.network.tcp_keepalive_idle_secs,
+        )?;
+        validate_interval(
+            "network.tcp_keepalive_interval_secs",
+            config.network.tcp_keepalive_interval_secs,
+        )?;
+
+        if config.network.tcp_keepalive_probes == 0 {
+            return Err(anyhow::anyhow!(
+                "network.tcp_keepalive_probes must be at least 1 (got 0)"
+            ));
+        }
+    }
+
+    // Trusting X-Forwarded-For without a trusted proxy list lets any client
+    // choose the address it is tracked and banned under.
+    if config.network.runs_behind_reverse_proxy && !config.trusted_proxies.enabled {
+        return Err(anyhow::anyhow!(
+            "network.runs_behind_reverse_proxy = true requires trusted_proxies.enabled = true \
+             and a non-empty trusted proxy list: otherwise any client can forge the '{}' header",
+            config.network.reverse_proxy_ip_header_name,
         ));
     }
 
@@ -229,6 +274,12 @@ pub fn run(config: Config) -> ::anyhow::Result<()> {
 
                         // Always cleanup expired entries, even if nothing was flushed
                         tracker.cleanup();
+
+                        ::log::debug!(
+                            "auto-ban: {} IPs tracked, {} currently banned",
+                            tracker.tracked_count(),
+                            tracker.banned_count(),
+                        );
                     }
                 }
 
