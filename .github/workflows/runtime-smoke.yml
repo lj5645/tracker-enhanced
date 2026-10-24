@@ -1,0 +1,62 @@
+name: Runtime Smoke Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: v1.4.0
+
+jobs:
+  runtime-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # glommio/io_uring needs privileged access in a container. The image
+    # matches the Ubuntu version the release binaries are built on.
+    container:
+      image: ubuntu:24.04
+      options: --privileged --security-opt seccomp=unconfined --ulimit memlock=524288:524288
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl file python3 python3-pip libhwloc15
+          python3 -m pip install --break-system-packages 'websockets==15.0.1'
+
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          mkdir -p /tmp/bin
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          for name in aquatic_udp aquatic_http aquatic_ws; do
+            curl -fL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -o "/tmp/bin/${name}" \
+              "${base}/${name}-linux-x86_64"
+            chmod +x "/tmp/bin/${name}"
+          done
+          file /tmp/bin/aquatic_*
+          ldd /tmp/bin/aquatic_http || true
+
+      - name: Run runtime smoke tests
+        run: |
+          python3 -I scripts/runtime-smoke/runtime_smoke.py \
+            --bin-dir /tmp/bin \
+            --work-dir /tmp/runtime
+
+      - name: Upload server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-smoke-logs
+          path: /tmp/runtime/**/server.log
+          if-no-files-found: ignore
+          retention-days: 3
