@@ -1,6 +1,8 @@
 mod connection;
 mod request;
 
+pub(crate) use connection::response_buffer_size;
+
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::os::unix::prelude::{FromRawFd, IntoRawFd};

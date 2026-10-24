@@ -78,6 +78,26 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
         }
     }
 
+    // The response buffer is allocated per connection and sized from the
+    // configured peer/scrape limits. Reject absurd values before the first
+    // connection allocates gigabytes (the buffer would otherwise only fail at
+    // request time, or abort the process on allocation failure).
+    const MAX_RESPONSE_BUFFER_SIZE: usize = 1024 * 1024;
+
+    let response_buffer_size = crate::workers::socket::response_buffer_size(&config);
+
+    if response_buffer_size > MAX_RESPONSE_BUFFER_SIZE {
+        return Err(anyhow::anyhow!(
+            "protocol.max_peers = {} and protocol.max_scrape_torrents = {} require a \
+             {}-byte response buffer per connection, above the {} byte limit; reduce them \
+             (for example max_peers <= 40000 or max_scrape_torrents <= 9000)",
+            config.protocol.max_peers,
+            config.protocol.max_scrape_torrents,
+            response_buffer_size,
+            MAX_RESPONSE_BUFFER_SIZE,
+        ));
+    }
+
     // Trusting X-Forwarded-For without a trusted proxy list lets any client
     // choose the address it is tracked and banned under.
     if config.network.runs_behind_reverse_proxy && !config.trusted_proxies.enabled {

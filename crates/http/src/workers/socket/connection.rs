@@ -53,7 +53,7 @@ static RESPONSE_HEADER: Lazy<Vec<u8>> =
 /// bencode writer then returned a write error and the connection was dropped).
 /// Deriving the size from the configuration makes every response that the
 /// request parser accepts fit.
-fn response_buffer_size(config: &Config) -> usize {
+pub(crate) fn response_buffer_size(config: &Config) -> usize {
     // Worst case per entry: three 64-bit integers, the peer id, IP and port for
     // announces; three integers and an info hash for scrapes.
     let announce_body = 256usize.saturating_add(config.protocol.max_peers.saturating_mul(96));
