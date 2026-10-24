@@ -16,8 +16,9 @@ name = "aquatic"
 [features]
 # Every protocol is opt-in so a platform only compiles what it supports:
 # the HTTP and WebSocket trackers are built on glommio/io_uring and therefore
-# cannot be compiled for Windows.
-default = ["udp"]
+# cannot be compiled for Windows. The Windows build passes
+# `--no-default-features --features udp`; Linux builds all of them.
+default = ["udp", "http", "ws", "prometheus", "mimalloc"]
 udp = ["dep:aquatic_udp"]
 http = ["dep:aquatic_http"]
 ws = ["dep:aquatic_ws"]
@@ -36,7 +37,7 @@ cpu-pinning = ["aquatic_http?/cpu-pinning"]
 
 [dependencies]
 aquatic_common.workspace = true
-aquatic_http = { workspace = true, optional = true, default-features = false }
-aquatic_udp = { workspace = true, optional = true, default-features = false }
-aquatic_ws = { workspace = true, optional = true, default-features = false }
+aquatic_http = { workspace = true, optional = true }
+aquatic_udp = { workspace = true, optional = true }
+aquatic_ws = { workspace = true, optional = true }
 mimalloc = { version = "0.1", default-features = false, optional = true }
