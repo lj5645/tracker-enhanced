@@ -76,7 +76,9 @@ fn parse_forwarded_header(
     headers: &[httparse::Header<'_>],
 ) -> anyhow::Result<IpAddr> {
     for header in headers.iter().rev() {
-        if header.name == header_name {
+        // HTTP header names are case-insensitive; proxies are not required to
+        // preserve the capitalization used in the configuration file.
+        if header.name.eq_ignore_ascii_case(header_name) {
             match header_format {
                 ReverseProxyPeerIpHeaderFormat::LastAddress => {
                     return ::std::str::from_utf8(header.value)?
@@ -147,6 +149,29 @@ mod tests {
                 .opt_peer_ip
                 .unwrap(),
             expected_ip
+        )
+    }
+
+    #[test]
+    fn test_parse_peer_ip_header_name_is_case_insensitive() {
+        let mut config = Config::default();
+
+        config.network.runs_behind_reverse_proxy = true;
+        // Some proxies lower-case header names; the config may use any case.
+        config.network.reverse_proxy_ip_header_name = "x-forwarded-for".into();
+        config.network.reverse_proxy_ip_header_format = ReverseProxyPeerIpHeaderFormat::LastAddress;
+
+        let mut request = REQUEST_START.to_string();
+
+        request.push_str("X-Forwarded-For: 203.0.113.9\r\n");
+        request.push_str("\r\n");
+
+        assert_eq!(
+            parse_request(&config, request.as_bytes())
+                .unwrap()
+                .opt_peer_ip
+                .unwrap(),
+            IpAddr::from([203, 0, 113, 9])
         )
     }
 

@@ -6,13 +6,10 @@ on:
 permissions:
   contents: read
 
-env:
-  RELEASE_TAG: v1.4.0
-
 jobs:
   runtime-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     # glommio/io_uring needs privileged access in a container. The image
     # matches the Ubuntu version the release binaries are built on.
     container:
@@ -21,30 +18,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install runtime dependencies
+      - name: Install build and runtime dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl file python3 python3-pip libhwloc15
+            ca-certificates file python3 python3-pip libhwloc15 \
+            build-essential cmake git
           python3 -m pip install --break-system-packages 'websockets==15.0.1'
 
-      - name: Download release binaries
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust dependency caching
+        uses: Swatinem/rust-cache@v2
+
+      # Build from the checked-out ref instead of downloading a release, so a
+      # fix can be runtime-tested before a new release is published.
+      - name: Build tracker binaries
         run: |
           set -eux
+          cargo build --release -p aquatic_udp -p aquatic_http -p aquatic_ws
           mkdir -p /tmp/bin
-          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          for name in aquatic_udp aquatic_http aquatic_ws; do
-            curl -fL \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/octet-stream" \
-              -o "/tmp/bin/${name}" \
-              "${base}/${name}-linux-x86_64"
-            chmod +x "/tmp/bin/${name}"
-          done
+          cp target/release/aquatic_udp \
+             target/release/aquatic_http \
+             target/release/aquatic_ws \
+             /tmp/bin/
           file /tmp/bin/aquatic_*
-          ldd /tmp/bin/aquatic_http || true
 
       - name: Run runtime smoke tests
         run: |

@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use aquatic_toml_config::TomlConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::canonical_ip;
+
 pub struct RequestFilter {
     sql_injection_patterns: Vec<&'static str>,
     path_traversal_patterns: Vec<&'static str>,
@@ -159,8 +161,12 @@ impl RequestFilter {
     }
 
     pub fn check_ip(&self, ip: &IpAddr) -> FilterResult {
+        // Dual-stack listeners report IPv4 peers as IPv4-mapped IPv6
+        // addresses; canonicalize so the IPv4 private ranges still match.
+        let ip = canonical_ip(*ip);
+
         for (range_base, prefix_len) in &self.private_ip_ranges {
-            if self.ip_in_range(ip, range_base, *prefix_len) {
+            if self.ip_in_range(&ip, range_base, *prefix_len) {
                 return FilterResult::BlockedPrivateIp;
             }
         }
@@ -409,6 +415,25 @@ mod tests {
         );
         assert_eq!(
             filter.check_ip(&IpAddr::V4("8.8.8.8".parse().unwrap())),
+            FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_private_ip_detection_ipv4_mapped() {
+        let filter = RequestFilter::new();
+
+        // Dual-stack listeners report IPv4 peers as ::ffff:a.b.c.d.
+        assert_eq!(
+            filter.check_ip(&"::ffff:10.0.0.1".parse().unwrap()),
+            FilterResult::BlockedPrivateIp
+        );
+        assert_eq!(
+            filter.check_ip(&"::ffff:192.168.1.1".parse().unwrap()),
+            FilterResult::BlockedPrivateIp
+        );
+        assert_eq!(
+            filter.check_ip(&"::ffff:8.8.8.8".parse().unwrap()),
             FilterResult::Allowed
         );
     }

@@ -15,7 +15,7 @@ use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::auto_ban::{AutoBanTracker, AutoBanReason};
 use aquatic_common::trusted_proxies::{last_forwarded_for_ip, TrustedProxiesArcSwap};
 use aquatic_common::rustls_config::RustlsConfig;
-use aquatic_common::ServerStartInstant;
+use aquatic_common::{canonical_ip, ServerStartInstant};
 use aquatic_ws_protocol::common::{InfoHash, PeerId, ScrapeAction};
 use aquatic_ws_protocol::incoming::{
     AnnounceEvent, AnnounceRequest, InMessage, ScrapeRequest, ScrapeRequestInfoHashes,
@@ -37,7 +37,7 @@ use glommio::{enclose, prelude::*};
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 use slab::Slab;
-use tungstenite::handshake::server::{Request, Response};
+use tungstenite::handshake::server::{ErrorResponse as HandshakeErrorResponse, Request, Response};
 
 #[cfg(feature = "metrics")]
 use metrics::{Counter, Gauge};
@@ -183,51 +183,71 @@ impl ConnectionRunner {
 
         // Capture handshake headers using Rc<RefCell<>> for shared mutable access
         let handshake_user_agent: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-        let handshake_xff: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let handshake_peer_ip: Rc<RefCell<Option<IpAddr>>> = Rc::new(RefCell::new(None));
 
         let callback_ua = handshake_user_agent.clone();
-        let callback_xff = handshake_xff.clone();
+        let callback_peer_ip = handshake_peer_ip.clone();
+        let callback_config = self.config.clone();
+        let callback_ip_ban_list = self.ip_ban_list.clone();
+        let callback_auto_ban_tracker = self.auto_ban_tracker.clone();
+        let callback_trusted_proxies = self.trusted_proxies.clone();
+        let socket_peer_ip = self.peer_ip;
 
         let callback = move |req: &Request, response: Response| {
             // Extract User-Agent header
+            let mut opt_user_agent = None;
             if let Some(ua) = req.headers().get("user-agent") {
                 if let Ok(ua_str) = ua.to_str() {
-                    *callback_ua.borrow_mut() = Some(ua_str.to_string());
+                    opt_user_agent = Some(ua_str.to_string());
                 }
             }
+
             // Extract X-Forwarded-For header
+            let mut opt_xff = None;
             if let Some(xff) = req.headers().get("x-forwarded-for") {
                 if let Ok(xff_str) = xff.to_str() {
-                    *callback_xff.borrow_mut() = Some(xff_str.to_string());
+                    opt_xff = Some(xff_str.to_string());
                 }
             }
+
+            // Resolve the real client IP before accepting the session, and
+            // reject banned IPs during the handshake instead of letting them
+            // open a connection that every message has to be filtered from.
+            let peer_ip = resolve_handshake_peer_ip(
+                &callback_config,
+                &callback_trusted_proxies,
+                socket_peer_ip,
+                opt_xff.as_deref(),
+            );
+
+            if callback_config.ip_ban.mode.is_on()
+                && callback_ip_ban_list.load().is_banned(&peer_ip)
+            {
+                ::log::debug!("Rejecting WebSocket handshake from banned IP: {}", peer_ip);
+                return Err(handshake_rejection("IP banned"));
+            }
+
+            if let Some(tracker) = callback_auto_ban_tracker.as_ref() {
+                if tracker.is_auto_banned(&peer_ip) {
+                    ::log::debug!(
+                        "Rejecting WebSocket handshake from auto-banned IP: {}",
+                        peer_ip
+                    );
+                    return Err(handshake_rejection("IP banned"));
+                }
+            }
+
+            *callback_ua.borrow_mut() = opt_user_agent;
+            *callback_peer_ip.borrow_mut() = Some(peer_ip);
+
             Ok(response)
         };
 
         let stream = async_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_config)).await?;
         let (ws_out, ws_in) = futures::StreamExt::split(stream);
 
-        // Resolve real peer IP using trusted proxies
-        let mut peer_ip = self.peer_ip;
-        if self.config.trusted_proxies.enabled {
-            let trusted_proxies = self.trusted_proxies.load();
-            if trusted_proxies.is_trusted(self.peer_ip) {
-                if let Some(xff) = handshake_xff.borrow().as_ref() {
-                    // X-Forwarded-For: client, proxy1, proxy2. The rightmost
-                    // entry is the one appended by the trusted proxy; the
-                    // leftmost value is client-controlled and spoofable.
-                    if let Some(client_ip) = last_forwarded_for_ip(xff) {
-                        peer_ip = client_ip;
-                    } else {
-                        ::log::warn!(
-                            "Invalid X-Forwarded-For header from trusted proxy {}: {}",
-                            self.peer_ip,
-                            xff
-                        );
-                    }
-                }
-            }
-        }
+        // The callback above already resolved the trusted-proxy client IP.
+        let peer_ip = (*handshake_peer_ip.borrow()).unwrap_or(self.peer_ip);
 
         // Crawler detection on handshake User-Agent
         let request_filter = RequestFilter::new();
@@ -846,4 +866,48 @@ impl ConnectionCleanupData {
 struct PendingScrapeResponse {
     pending_worker_out_messages: usize,
     stats: HashMap<InfoHash, ScrapeStatistics>,
+}
+
+/// Resolve the client IP of a WebSocket handshake.
+///
+/// The socket address is canonicalized so that dual-stack listeners (bound to
+/// `[::]` with `only_ipv6 = false`) report IPv4 peers as plain IPv4.
+/// `X-Forwarded-For` is only honoured when the connecting peer is a configured
+/// trusted proxy, and its rightmost entry is used because that is the value
+/// appended by the proxy while entries to its left are client-controlled.
+fn resolve_handshake_peer_ip(
+    config: &Config,
+    trusted_proxies: &TrustedProxiesArcSwap,
+    socket_peer_ip: IpAddr,
+    opt_xff: Option<&str>,
+) -> IpAddr {
+    let socket_peer_ip = canonical_ip(socket_peer_ip);
+
+    if config.trusted_proxies.enabled && trusted_proxies.load().is_trusted(socket_peer_ip) {
+        if let Some(xff) = opt_xff {
+            if let Some(client_ip) = last_forwarded_for_ip(xff) {
+                return canonical_ip(client_ip);
+            }
+
+            ::log::warn!(
+                "Invalid X-Forwarded-For header from trusted proxy {}: {}",
+                socket_peer_ip,
+                xff
+            );
+        }
+    }
+
+    socket_peer_ip
+}
+
+/// Build the HTTP response sent when a handshake is refused.
+///
+/// `tungstenite` represents a handshake rejection as an `http::Response` whose
+/// body is the error text, and only treats it as a rejection when the status is
+/// not a success code — a default `Response::new` (200) would instead surface as
+/// a protocol error.
+fn handshake_rejection(message: &'static str) -> HandshakeErrorResponse {
+    let mut response = HandshakeErrorResponse::new(Some(message.to_string()));
+    *response.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+    response
 }

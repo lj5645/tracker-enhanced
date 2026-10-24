@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +6,8 @@ use aquatic_toml_config::TomlConfig;
 use arc_swap::{ArcSwap, Cache};
 use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
+
+use crate::canonical_ip;
 
 #[cfg(test)]
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -83,21 +83,37 @@ pub struct IpBanList {
 
 impl IpBanList {
     pub fn create_from_path(path: &PathBuf) -> anyhow::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        // Read the file as bytes and decode lossily: a single non-UTF-8 byte
+        // (for example a comment written by a Windows editor in a local code
+        // page) would otherwise make the whole file fail to load, silently
+        // disabling every ban in it.
+        let bytes = std::fs::read(path)?;
+        let content = String::from_utf8_lossy(&bytes);
 
         let mut list = Self::default();
 
-        for line in reader.lines() {
-            let line = line?;
+        for (index, line) in content.lines().enumerate() {
+            // Files written by Windows editors commonly start with a UTF-8 BOM,
+            // and operators often add trailing comments. Both would otherwise
+            // make the first (or every annotated) entry silently unbanned.
+            let line = line.trim_start_matches('\u{feff}');
+            let line = match line.split_once('#') {
+                Some((entry, _)) => entry,
+                None => line,
+            };
             let line = line.trim();
 
-            if line.is_empty() || line.starts_with('#') {
+            if line.is_empty() {
                 continue;
             }
 
             if let Err(err) = list.add_entry(line) {
-                ::log::warn!("Invalid IP ban entry '{}': {:#}", line, err);
+                ::log::warn!(
+                    "Invalid IP ban entry on line {} ('{}'): {:#}",
+                    index + 1,
+                    line,
+                    err,
+                );
             }
         }
 
@@ -136,17 +152,20 @@ impl IpBanList {
     }
 
     pub fn is_banned(&self, ip: &IpAddr) -> bool {
-        if self.banned_ips.contains(ip) {
+        // Dual-stack listeners report IPv4 peers as `::ffff:a.b.c.d`. Match
+        // both the address as received and its canonical IPv4 form so entries
+        // written in either notation (and IPv4 CIDR ranges) keep working.
+        if self.matches(ip) {
             return true;
         }
 
-        for range in &self.banned_ranges {
-            if range.contains(ip) {
-                return true;
-            }
-        }
+        let canonical = canonical_ip(*ip);
 
-        false
+        canonical != *ip && self.matches(&canonical)
+    }
+
+    fn matches(&self, ip: &IpAddr) -> bool {
+        self.banned_ips.contains(ip) || self.banned_ranges.iter().any(|range| range.contains(ip))
     }
 
     #[allow(clippy::len_without_is_empty)]
@@ -223,5 +242,85 @@ mod tests {
         assert!(list.is_banned(&IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))));
         assert!(list.is_banned(&IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))));
         assert!(!list.is_banned(&IpAddr::V6(Ipv6Addr::new(0x2002, 0xdb8, 0, 0, 0, 0, 0, 1))));
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_matches_ipv4_entries() {
+        // A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d.
+        let mut list = IpBanList::default();
+        list.add_entry("192.168.1.100").unwrap();
+        list.add_entry("10.0.0.0/8").unwrap();
+
+        let mapped_exact: IpAddr = "::ffff:192.168.1.100".parse().unwrap();
+        let mapped_range: IpAddr = "::ffff:10.1.2.3".parse().unwrap();
+        let mapped_other: IpAddr = "::ffff:192.168.1.101".parse().unwrap();
+
+        assert!(list.is_banned(&mapped_exact));
+        assert!(list.is_banned(&mapped_range));
+        assert!(!list.is_banned(&mapped_other));
+
+        // Plain IPv4 still matches.
+        assert!(list.is_banned(&"192.168.1.100".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_ipv4_peer_matches_mapped_entry() {
+        // An operator may also write the mapped form into the list.
+        let mut list = IpBanList::default();
+        list.add_entry("::ffff:203.0.113.9").unwrap();
+
+        assert!(list.is_banned(&"203.0.113.9".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_ban_list_file_formats() {
+        let path = std::env::temp_dir().join("aquatic_ip_ban_formats_test.txt");
+        std::fs::write(
+            &path,
+            "\u{feff}127.0.0.1\r\n\
+             \r\n\
+             # full line comment\r\n\
+             10.0.0.0/8 # inline comment\r\n\
+             192.0.2.5\r\n",
+        )
+        .unwrap();
+
+        let list = IpBanList::create_from_path(&path).unwrap();
+
+        assert!(list.is_banned(&"127.0.0.1".parse().unwrap()));
+        assert!(list.is_banned(&"10.9.8.7".parse().unwrap()));
+        assert!(list.is_banned(&"192.0.2.5".parse().unwrap()));
+        assert!(!list.is_banned(&"192.0.2.6".parse().unwrap()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_ban_list_non_utf8_line_does_not_break_list() {
+        let path = std::env::temp_dir().join("aquatic_ip_ban_non_utf8_test.txt");
+        // A comment written in a non-UTF-8 code page (GBK for "扫描器")
+        // followed by a valid entry: only the undecodable line is skipped.
+        std::fs::write(&path, b"\xc9\xa8\xc3\xe8\xc6\xf7\n203.0.113.1\n").unwrap();
+
+        let list = IpBanList::create_from_path(&path).unwrap();
+
+        assert!(list.is_banned(&"203.0.113.1".parse().unwrap()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_invalid_entries_are_skipped() {
+        let path = std::env::temp_dir().join("aquatic_ip_ban_invalid_test.txt");
+        std::fs::write(&path, "not-an-ip\n10.0.0.0/33\n1.2.3.4/nope\n203.0.113.1\n").unwrap();
+
+        let list = IpBanList::create_from_path(&path).unwrap();
+
+        // Valid entries still load; invalid ones are ignored rather than
+        // aborting the whole list.
+        assert!(list.is_banned(&"203.0.113.1".parse().unwrap()));
+        assert!(!list.is_banned(&"10.1.1.1".parse().unwrap()));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

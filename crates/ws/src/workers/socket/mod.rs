@@ -143,7 +143,13 @@ pub async fn run_socket_worker(
             }
             Ok(stream) => {
                 let (ip_version, peer_ip) = match stream.peer_addr() {
-                    Ok(addr) => (IpVersion::canonical_from_ip(addr.ip()), addr.ip()),
+                    // A dual-stack listener (`[::]` with `only_ipv6 = false`)
+                    // reports IPv4 peers as ::ffff:a.b.c.d. Canonicalize so IP
+                    // ban, trusted proxy and private IP checks see plain IPv4.
+                    Ok(addr) => {
+                        let peer_ip = aquatic_common::canonical_ip(addr.ip());
+                        (IpVersion::canonical_from_ip(peer_ip), peer_ip)
+                    }
                     Err(err) => {
                         ::log::info!("could not extract ip version (v4 or v6): {:#}", err);
 

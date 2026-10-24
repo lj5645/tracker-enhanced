@@ -12,7 +12,7 @@ use aquatic_common::client_whitelist::{create_client_whitelist_cache, ClientWhit
 use aquatic_common::request_filter::RequestFilter;
 use aquatic_common::rustls_config::RustlsConfig;
 use aquatic_common::auto_ban::{AutoBanReason, AutoBanTracker};
-use aquatic_common::{CanonicalSocketAddr, ServerStartInstant};
+use aquatic_common::{canonical_ip, CanonicalSocketAddr, ServerStartInstant};
 use aquatic_http_protocol::common::InfoHash;
 use aquatic_http_protocol::request::{Request, ScrapeRequest};
 use aquatic_http_protocol::response::{
@@ -113,8 +113,10 @@ pub(super) async fn run_connection(
         .map_err(|err| ConnectionError::NoSocketPeerAddr(err.to_string()))?;
 
     let trusted_proxies = state.trusted_proxies.load();
-    let is_trusted_proxy = config.trusted_proxies.enabled 
-        && trusted_proxies.is_trusted(remote_addr.ip());
+    // A dual-stack listener reports IPv4 proxies as ::ffff:a.b.c.d, while the
+    // trusted proxy file normally contains plain IPv4 addresses.
+    let is_trusted_proxy = config.trusted_proxies.enabled
+        && trusted_proxies.is_trusted(canonical_ip(remote_addr.ip()));
 
     let opt_peer_addr = if config.network.runs_behind_reverse_proxy {
         if config.trusted_proxies.enabled && !is_trusted_proxy {

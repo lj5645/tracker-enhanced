@@ -55,11 +55,11 @@ def write(path, text):
     path.write_text(text, encoding="utf-8")
 
 
-def tcp_ready(port, timeout=20.0):
+def tcp_ready(port, timeout=20.0, host="127.0.0.1"):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            with socket.create_connection((host, port), timeout=0.5):
                 return True
         except OSError:
             time.sleep(0.1)
@@ -67,12 +67,13 @@ def tcp_ready(port, timeout=20.0):
 
 
 class Server:
-    def __init__(self, name, binary, workdir, port, tcp):
+    def __init__(self, name, binary, workdir, port, tcp, host="127.0.0.1"):
         self.name = name
         self.binary = str(binary)
         self.workdir = workdir
         self.port = port
         self.tcp = tcp
+        self.host = host
         self.log_path = workdir / "server.log"
         self.log_file = open(self.log_path, "wb")
         self.proc = subprocess.Popen(
@@ -84,7 +85,7 @@ class Server:
 
     def wait_ready(self):
         if self.tcp:
-            ready = tcp_ready(self.port)
+            ready = tcp_ready(self.port, host=self.host)
         else:
             deadline = time.time() + 10.0
             ready = False
@@ -127,7 +128,7 @@ def list_files(directory, ip_ban="", client_ban="-bt\n", whitelist=""):
 
 def udp_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
                whitelist_on=False, private_filter=False, auto_ban=False,
-               metrics_port=None):
+               ipv6_only=False, metrics_port=None):
     metrics = ""
     if metrics_port:
         metrics = f"""
@@ -152,8 +153,8 @@ socket_workers = 1
 log_level = "info"
 
 [network]
-use_ipv4 = true
-use_ipv6 = false
+use_ipv4 = {str(not ipv6_only).lower()}
+use_ipv6 = {str(ipv6_only).lower()}
 address_ipv4 = "127.0.0.1:{port}"
 address_ipv6 = "[::1]:{port}"
 socket_recv_buffer_size = 0
@@ -207,7 +208,7 @@ flush_interval_secs = 1
 def http_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
                 whitelist_on=False, filters=None, private_filter=False,
                 auto_ban=False, proxy=False, trusted_proxy="",
-                metrics_port=None):
+                dualstack=False, metrics_port=None):
     filters = filters or {}
     trusted = f"""
 [trusted_proxies]
@@ -216,6 +217,9 @@ path = "{"trusted-proxies.txt" if trusted_proxy else ""}"
 """
     if trusted_proxy:
         write(directory / "trusted-proxies.txt", trusted_proxy + "\n")
+    # A wildcard IPv6 address with `set_only_ipv6 = false` is a dual-stack
+    # listener: IPv4 clients arrive as IPv4-mapped IPv6 addresses.
+    ipv6_address = "[::]" if dualstack else "[::1]"
     metrics = f"""
 [metrics]
 run_prometheus_endpoint = {str(bool(metrics_port)).lower()}
@@ -228,10 +232,10 @@ swarm_workers = 1
 log_level = "info"
 
 [network]
-use_ipv4 = true
-use_ipv6 = false
+use_ipv4 = {str(not dualstack).lower()}
+use_ipv6 = {str(dualstack).lower()}
 address_ipv4 = "127.0.0.1:{port}"
-address_ipv6 = "[::1]:{port}"
+address_ipv6 = "{ipv6_address}:{port}"
 tcp_backlog = 128
 enable_tls = false
 tls_certificate_path = ""
@@ -240,7 +244,7 @@ keep_alive = false
 runs_behind_reverse_proxy = {str(proxy).lower()}
 reverse_proxy_ip_header_name = "X-Forwarded-For"
 reverse_proxy_ip_header_format = "last_address"
-set_only_ipv6 = true
+set_only_ipv6 = {str(not dualstack).lower()}
 socket_recv_buffer_size = 0
 socket_send_buffer_size = 0
 max_connections_per_worker = 1000
@@ -296,7 +300,10 @@ flush_interval_secs = 1
 
 def ws_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
               whitelist_on=False, filters=None, private_filter=False,
-              auto_ban=False, trusted_proxy="", metrics_port=None):
+              auto_ban=False, trusted_proxy="", address=None,
+              only_ipv6=False, metrics_port=None):
+    if address is None:
+        address = f"127.0.0.1:{port}"
     filters = filters or {}
     trusted = f"""
 [trusted_proxies]
@@ -319,8 +326,8 @@ swarm_workers = 1
 log_level = "info"
 
 [network]
-address = "127.0.0.1:{port}"
-only_ipv6 = false
+address = "{address}"
+only_ipv6 = {str(only_ipv6).lower()}
 tcp_backlog = 128
 enable_tls = false
 tls_certificate_path = ""
@@ -382,9 +389,10 @@ flush_interval_secs = 1
 # ---------------------------------------------------------------------------
 
 class UdpClient:
-    def __init__(self, port, timeout=0.8):
-        self.addr = ("127.0.0.1", port)
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def __init__(self, port, timeout=0.8, host="127.0.0.1"):
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        self.addr = (host, port)
+        self.sock = socket.socket(family, socket.SOCK_DGRAM)
         self.sock.settimeout(timeout)
         self.tx = 1000
 
@@ -483,6 +491,23 @@ def udp_ipban(port):
         c.close()
 
 
+def udp_ipban_ipv6(port):
+    c = UdpClient(port, host="::1")
+    try:
+        check(c.connect() is None, "udp ipban ipv6: connect blocked")
+    finally:
+        c.close()
+
+
+def udp_ipban_off(port):
+    c = UdpClient(port)
+    try:
+        # The list contains the client IP, but ip_ban.mode = off.
+        check(c.connect() is not None, "udp ipban off: connect allowed")
+    finally:
+        c.close()
+
+
 def udp_private(port):
     c = UdpClient(port)
     try:
@@ -502,6 +527,12 @@ def udp_hotreload(port, server, workdir):
         time.sleep(1.0)
         check(c.announce(cid, PEER_ALLOWED) is None, "udp hotreload: announce blocked after SIGUSR2")
         check(c.connect() is None, "udp hotreload: connect blocked after SIGUSR2")
+
+        # Removing the entry and reloading must lift the ban again.
+        (workdir / "ip-ban-list.txt").write_text("# empty\n", encoding="utf-8")
+        server.send_signal(signal.SIGUSR2)
+        time.sleep(1.0)
+        check(c.connect() is not None, "udp hotreload: unblocked after second SIGUSR2")
     finally:
         c.close()
 
@@ -597,6 +628,10 @@ def http_ipban(port):
     http_blocked(port, announce_target(PEER_ALLOWED), "IP banned", "http ipban")
 
 
+def http_ipban_off(port):
+    http_allowed(port, announce_target(PEER_ALLOWED), "http ipban off: announce allowed")
+
+
 def http_trusted_proxy(port):
     headers = {"X-Forwarded-For": "1.2.3.4, 203.0.113.9"}
     http_blocked(port, announce_target(PEER_ALLOWED), "IP banned",
@@ -624,12 +659,20 @@ def http_hotreload(port, server, workdir):
     http_blocked(port, announce_target(PEER_ALLOWED), "IP banned",
                  "http hotreload: blocked after SIGUSR2")
 
+    # Removing the entry and reloading must lift the ban again.
+    (workdir / "ip-ban-list.txt").write_text("# empty\n", encoding="utf-8")
+    server.send_signal(signal.SIGUSR2)
+    time.sleep(1.0)
+    http_allowed(port, announce_target(PEER_ALLOWED),
+                 "http hotreload: unbanned after second SIGUSR2")
+
 
 # ---------------------------------------------------------------------------
 # WebSocket probes
 # ---------------------------------------------------------------------------
 
-def ws_connect(port, *, user_agent=UA_ALLOWED, headers=None, timeout=5):
+def ws_connect(port, *, user_agent=UA_ALLOWED, headers=None, timeout=5,
+               host="127.0.0.1"):
     from websockets.sync.client import connect
     kwargs = {
         "open_timeout": timeout,
@@ -638,7 +681,9 @@ def ws_connect(port, *, user_agent=UA_ALLOWED, headers=None, timeout=5):
     }
     if headers:
         kwargs["additional_headers"] = headers
-    return connect(f"ws://127.0.0.1:{port}/", **kwargs)
+    if ":" in host:
+        host = f"[{host}]"
+    return connect(f"ws://{host}:{port}/", **kwargs)
 
 
 def ws_announce(ws, peer_id):
@@ -666,6 +711,21 @@ def ws_blocked(port, peer_id, label, **kwargs):
               f"{label}: Access denied")
 
 
+def ws_blocked_anywhere(port, peer_id, label, **kwargs):
+    """Assert that a banned IP is rejected either at the handshake or when it
+    announces. IP/auto bans reject the WebSocket handshake; request-level
+    filters reject the announce message."""
+    try:
+        with ws_connect(port, **kwargs) as ws:
+            response = ws_announce(ws, peer_id)
+            check(response.get("failure reason") == "Access denied",
+                  f"{label}: Access denied")
+    except AssertionError:
+        raise
+    except Exception:  # noqa: BLE001 - handshake rejection is a valid outcome
+        check(True, f"{label}: handshake rejected")
+
+
 def ws_basic(port):
     with ws_connect(port) as ws:
         response = ws_announce(ws, PEER_ALLOWED)
@@ -683,7 +743,17 @@ def ws_whitelist(port):
 
 
 def ws_ipban(port):
-    ws_blocked(port, PEER_ALLOWED, "ws ipban")
+    ws_blocked_anywhere(port, PEER_ALLOWED, "ws ipban")
+
+
+def ws_ipban_ipv6(port):
+    ws_blocked_anywhere(port, PEER_ALLOWED, "ws ipban ipv6", host="::1")
+
+
+def ws_ipban_dualstack(port):
+    # IPv4 client on a [::] listener: the server sees ::ffff:127.0.0.1, which
+    # must still match the IPv4 entry in the ban list.
+    ws_blocked_anywhere(port, PEER_ALLOWED, "ws ipban dualstack")
 
 
 def ws_private(port):
@@ -692,7 +762,8 @@ def ws_private(port):
 
 def ws_trusted_proxy(port):
     headers = {"X-Forwarded-For": "1.2.3.4, 203.0.113.9"}
-    ws_blocked(port, PEER_ALLOWED, "ws trusted proxy: rightmost XFF banned", headers=headers)
+    ws_blocked_anywhere(port, PEER_ALLOWED,
+                        "ws trusted proxy: rightmost XFF banned", headers=headers)
     headers = {"X-Forwarded-For": "1.2.3.4"}
     ws_allowed(port, PEER_ALLOWED, "ws trusted proxy: trusted client allowed", headers=headers)
 
@@ -715,7 +786,13 @@ def ws_hotreload(port, server, workdir):
     (workdir / "ip-ban-list.txt").write_text("127.0.0.1\n", encoding="utf-8")
     server.send_signal(signal.SIGUSR2)
     time.sleep(1.0)
-    ws_blocked(port, PEER_ALLOWED, "ws hotreload: blocked after SIGUSR2")
+    ws_blocked_anywhere(port, PEER_ALLOWED, "ws hotreload: blocked after SIGUSR2")
+
+    # Removing the entry and reloading must lift the ban again.
+    (workdir / "ip-ban-list.txt").write_text("# empty\n", encoding="utf-8")
+    server.send_signal(signal.SIGUSR2)
+    time.sleep(1.0)
+    ws_allowed(port, PEER_ALLOWED, "ws hotreload: unbanned after second SIGUSR2")
 
 
 def ws_handshake_filters(port):
@@ -776,7 +853,17 @@ def get_metrics(port, timeout=15):
 # Scenario registry
 # ---------------------------------------------------------------------------
 
-def scenario(name, service, port, config, probe, *, tcp=None, metrics_port=None):
+def ipv6_available():
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+def scenario(name, service, port, config, probe, *, tcp=None, host="127.0.0.1",
+             requires_ipv6=False, metrics_port=None):
     return {
         "name": name,
         "service": service,
@@ -784,6 +871,8 @@ def scenario(name, service, port, config, probe, *, tcp=None, metrics_port=None)
         "config": config,
         "probe": probe,
         "tcp": (service != "udp") if tcp is None else tcp,
+        "host": host,
+        "requires_ipv6": requires_ipv6,
         "metrics_port": metrics_port,
     }
 
@@ -808,6 +897,23 @@ def build_scenarios():
         scenario("udp_private", "udp", 18104,
                  lambda d, p: (list_files(d), udp_config(d, p, private_filter=True)),
                  lambda s, d: udp_private(s.port)),
+        scenario("udp_ipban_cidr", "udp", 18107,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.0/8\n"),
+                               udp_config(d, p)),
+                 lambda s, d: udp_ipban(s.port)),
+        scenario("udp_ipban_exact", "udp", 18108,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.1\n"),
+                               udp_config(d, p)),
+                 lambda s, d: udp_ipban(s.port)),
+        scenario("udp_ipban_ipv6", "udp", 18109,
+                 lambda d, p: (list_files(d, ip_ban="::1\n"),
+                               udp_config(d, p, ipv6_only=True)),
+                 lambda s, d: udp_ipban_ipv6(s.port),
+                 requires_ipv6=True),
+        scenario("udp_ipban_off", "udp", 18110,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.1\n"),
+                               udp_config(d, p, ip_ban_on=False)),
+                 lambda s, d: udp_ipban_off(s.port)),
         scenario("udp_hotreload", "udp", 18105,
                  lambda d, p: (list_files(d), udp_config(d, p)),
                  lambda s, d: udp_hotreload(s.port, s, d)),
@@ -839,6 +945,19 @@ def build_scenarios():
                  lambda d, p: (list_files(d, ip_ban="127.0.0.1/32\n"),
                                http_config(d, p)),
                  lambda s, d: http_ipban(s.port)),
+        scenario("http_ipban_cidr", "http", 18209,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.0/8\n"),
+                               http_config(d, p)),
+                 lambda s, d: http_ipban(s.port)),
+        scenario("http_ipban_off", "http", 18210,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.1\n"),
+                               http_config(d, p, ip_ban_on=False)),
+                 lambda s, d: http_ipban_off(s.port)),
+        scenario("http_ipban_dualstack", "http", 18211,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.1/32\n"),
+                               http_config(d, p, dualstack=True)),
+                 lambda s, d: http_ipban(s.port),
+                 requires_ipv6=True),
         scenario("http_trusted_proxy", "http", 18205,
                  lambda d, p: (list_files(d, ip_ban="203.0.113.9\n"),
                                http_config(d, p, proxy=True, trusted_proxy="127.0.0.1/32")),
@@ -867,6 +986,22 @@ def build_scenarios():
                  lambda d, p: (list_files(d, ip_ban="127.0.0.1/32\n"),
                                ws_config(d, p)),
                  lambda s, d: ws_ipban(s.port)),
+        scenario("ws_ipban_cidr", "ws", 18311,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.0/8\n"),
+                               ws_config(d, p)),
+                 lambda s, d: ws_ipban(s.port)),
+        scenario("ws_ipban_ipv6", "ws", 18309,
+                 lambda d, p: (list_files(d, ip_ban="::1\n"),
+                               ws_config(d, p, address=f"[::1]:{p}",
+                                         only_ipv6=True)),
+                 lambda s, d: ws_ipban_ipv6(s.port),
+                 host="::1", requires_ipv6=True),
+        scenario("ws_ipban_dualstack", "ws", 18310,
+                 lambda d, p: (list_files(d, ip_ban="127.0.0.1/32\n"),
+                               ws_config(d, p, address=f"[::]:{p}",
+                                         only_ipv6=False)),
+                 lambda s, d: ws_ipban_dualstack(s.port),
+                 requires_ipv6=True),
         scenario("ws_private", "ws", 18303,
                  lambda d, p: (list_files(d), ws_config(d, p, private_filter=True)),
                  lambda s, d: ws_private(s.port)),
@@ -929,15 +1064,22 @@ def main():
         if not binaries[s["service"]].exists():
             raise SystemExit(f"missing binary: {binaries[s['service']]}")
 
+    ipv6_ok = ipv6_available()
+
     failed = []
     for s in scenarios:
+        if s.get("requires_ipv6") and not ipv6_ok:
+            print(f"\n=== {s['name']} ===\nSKIP (IPv6 is not available)")
+            continue
+
         print(f"\n=== {s['name']} ===")
         workdir = work_root / s["name"]
         if workdir.exists():
             shutil.rmtree(workdir)
         workdir.mkdir(parents=True)
         s["config"](workdir, s["port"])
-        server = Server(s["name"], binaries[s["service"]], workdir, s["port"], s["tcp"])
+        server = Server(s["name"], binaries[s["service"]], workdir, s["port"],
+                        s["tcp"], host=s["host"])
         try:
             server.wait_ready()
             s["probe"](server, workdir)

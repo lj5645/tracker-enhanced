@@ -1,5 +1,5 @@
 use std::fmt::Display;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Instant;
 
 use ahash::RandomState;
@@ -61,6 +61,25 @@ impl ServerStartInstant {
 #[derive(Debug, Clone, Copy)]
 pub struct SecondsSinceServerStart(u32);
 
+/// Convert an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to plain IPv4.
+///
+/// Dual-stack sockets (for example a WebSocket listener bound to `[::]` with
+/// `only_ipv6 = false`) report IPv4 peers in mapped form. Security checks such
+/// as IP ban lists, trusted-proxy matching and private IP filters are written
+/// with plain IPv4 addresses, so peer addresses must be canonicalized before
+/// they are compared — otherwise every check silently misses IPv4 clients.
+pub fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(addr) => match addr.octets() {
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d] => {
+                IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+            }
+            _ => ip,
+        },
+    }
+}
+
 /// SocketAddr that is not an IPv6-mapped IPv4 address
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct CanonicalSocketAddr(SocketAddr);
@@ -69,15 +88,10 @@ impl CanonicalSocketAddr {
     pub fn new(addr: SocketAddr) -> Self {
         match addr {
             addr @ SocketAddr::V4(_) => Self(addr),
-            SocketAddr::V6(addr) => {
-                match addr.ip().octets() {
-                    // Convert IPv4-mapped address (available in std but nightly-only)
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d] => Self(SocketAddr::V4(
-                        SocketAddrV4::new(Ipv4Addr::new(a, b, c, d), addr.port()),
-                    )),
-                    _ => Self(addr.into()),
-                }
-            }
+            SocketAddr::V6(addr) => match canonical_ip(addr.ip()) {
+                IpAddr::V4(ip) => Self(SocketAddr::V4(SocketAddrV4::new(ip, addr.port()))),
+                IpAddr::V6(_) => Self(addr.into()),
+            },
         }
     }
 
@@ -188,5 +202,38 @@ impl Display for WorkerType {
             #[cfg(feature = "prometheus")]
             Self::Prometheus => f.write_str("Prometheus worker"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn test_canonical_ip() {
+        let v4: IpAddr = "203.0.113.7".parse().unwrap();
+        assert_eq!(canonical_ip(v4), v4);
+
+        let mapped: IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        assert_eq!(canonical_ip(mapped), v4);
+
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(canonical_ip(v6), v6);
+
+        // IPv6 loopback is not an IPv4-mapped address.
+        let loopback = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        assert_eq!(canonical_ip(loopback), loopback);
+    }
+
+    #[test]
+    fn test_canonical_socket_addr_mapped() {
+        let mapped: SocketAddr = "[::ffff:203.0.113.7]:8080".parse().unwrap();
+        let canonical = CanonicalSocketAddr::new(mapped).get();
+
+        assert_eq!(canonical, "203.0.113.7:8080".parse::<SocketAddr>().unwrap());
+
+        let v6: SocketAddr = "[2001:db8::1]:8080".parse().unwrap();
+        assert_eq!(CanonicalSocketAddr::new(v6).get(), v6);
     }
 }

@@ -82,7 +82,17 @@ impl TrustedProxies {
         if self.table.is_empty() {
             return false;
         }
-        self.table.longest_match(addr).is_some()
+
+        if self.table.longest_match(addr).is_some() {
+            return true;
+        }
+
+        // Dual-stack listeners report IPv4 peers as IPv4-mapped IPv6
+        // addresses, while proxy lists normally contain plain IPv4 entries
+        // (and vice versa). Match the canonical form as well.
+        let canonical = crate::canonical_ip(addr);
+
+        canonical != addr && self.table.longest_match(canonical).is_some()
     }
 
     pub fn len(&self) -> usize {
@@ -130,8 +140,12 @@ pub fn update_trusted_proxies(
     trusted_proxies: &Arc<TrustedProxiesArcSwap>,
 ) -> anyhow::Result<()> {
     if config.enabled && !config.path.as_os_str().is_empty() {
-        let content = std::fs::read_to_string(&config.path)
+        // Decode lossily so that a comment written in a non-UTF-8 code page
+        // cannot make the entire list fail to load (which would leave the
+        // server trusting no proxy at all).
+        let bytes = std::fs::read(&config.path)
             .with_context(|| format!("Failed to read trusted proxies file: {:?}", config.path))?;
+        let content = String::from_utf8_lossy(&bytes);
         
         let mut networks = Vec::new();
         for line in content.lines() {
@@ -172,6 +186,19 @@ mod tests {
         assert!(proxies.is_trusted("10.0.0.1".parse().unwrap()));
         assert!(!proxies.is_trusted("10.0.0.2".parse().unwrap()));
         assert!(!proxies.is_trusted("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_trusted_proxies_ipv4_mapped() {
+        let proxies = TrustedProxies::from_iter(vec![
+            "127.0.0.1/32".parse().unwrap(),
+            "10.0.0.0/8".parse().unwrap(),
+        ]);
+
+        // Dual-stack listeners report IPv4 peers in mapped form.
+        assert!(proxies.is_trusted("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(proxies.is_trusted("::ffff:10.1.2.3".parse().unwrap()));
+        assert!(!proxies.is_trusted("::ffff:8.8.8.8".parse().unwrap()));
     }
 
     #[test]
