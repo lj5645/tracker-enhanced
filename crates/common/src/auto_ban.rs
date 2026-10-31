@@ -45,13 +45,13 @@ pub struct AutoBanConfig {
     /// Minimum value is 1.
     pub flush_interval_secs: u64,
     /// Ban duration in seconds for the first high-severity violation
-    /// (SQL injection, path traversal, banned client). 0 means "use
-    /// `ban_duration_secs`", which makes the first violation permanent.
+    /// (SQL injection, path traversal, banned client). `0` — the default —
+    /// means "inherit `ban_duration_secs`".
     ///
-    /// A short value is the safer default: a misconfigured reverse proxy makes
-    /// every request look like it comes from the proxy address, and a
-    /// permanent ban would then lock out the whole entry point. With a
-    /// non-zero value the server recovers on its own.
+    /// Set a short value (for example 3600) if you prefer a reversible first
+    /// strike: a misconfigured reverse proxy makes every request look like it
+    /// comes from the proxy address, and a permanent ban would then lock out
+    /// the whole entry point.
     pub immediate_ban_secs: u64,
     /// Escalate repeated offences to longer bans, ending in a permanent ban.
     ///
@@ -81,10 +81,9 @@ impl Default for AutoBanConfig {
             ban_duration_secs: 0,
             ban_list_path: PathBuf::from("./ip-ban-list.txt"),
             flush_interval_secs: 60,
-            // One hour instead of "same as ban_duration_secs": the first
-            // high-severity hit is the most likely to be a false positive
-            // caused by a proxy, and it should not be irreversible by default.
-            immediate_ban_secs: 3600,
+            // Inherit `ban_duration_secs`: a permanent default duration must
+            // not silently turn into a temporary high-severity ban.
+            immediate_ban_secs: 0,
             escalation_enabled: false,
             escalation_steps: String::from("300,3600,86400"),
             offense_decay_secs: 86_400,

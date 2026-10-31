@@ -297,7 +297,7 @@ enabled = true              # 启用自动封禁
 threshold = 10              # 可疑档 / 启发式档的计数阈值
 window_secs = 60            # 统计时间窗口（秒）
 ban_duration_secs = 0       # 可疑档封禁时长，0 = 永久（默认）
-immediate_ban_secs = 3600   # 高危档首次封禁时长，0 = 沿用 ban_duration_secs
+immediate_ban_secs = 0      # 高危档首次封禁时长，0 = 沿用 ban_duration_secs（默认）
 ban_list_path = "./ip-ban-list.txt"  # 永久封禁触发时立即写入，重启后仍然生效
 flush_interval_secs = 60    # 重试失败写入、热重载 ip_ban_list 的间隔（秒）
 
@@ -307,9 +307,9 @@ escalation_steps = "300,3600,86400"  # 第 1/2/3 次，用完后转为永久
 offense_decay_secs = 86400           # 24 小时无新违规则清空前科
 ```
 
-> `immediate_ban_secs` 默认 `3600`（1 小时）而不是"沿用永久"：反向代理配错时，
-> 所有请求的源地址都会变成代理 IP，一次 SQL 注入扫描就会把整个入口封死。
-> 1 小时后自动解封，服务能自愈。确认无误判后可设为 `0` 改为直接永久封禁。
+> `immediate_ban_secs` 默认 `0`，即沿用 `ban_duration_secs`，因此在默认配置下高危档
+> 一次命中就永久封禁。如果担心误判——反向代理配错时所有请求的源地址都会变成代理 IP，
+> 一次扫描就会封掉整个入口——建议显式设为 `3600`：1 小时后自动解封，服务能自愈。
 
 > **永久封禁在触发瞬间写入 `ban_list_path`**，不等待 flush 间隔，因此重启不会解除。
 > 只要可能产生永久封禁——`ban_duration_secs = 0`，或 `escalation_enabled = true`

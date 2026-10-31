@@ -5,7 +5,7 @@
 ### 自动封禁分级
 
 - 违规原因按严重程度分为三档，不再一律走计数：
-  - **高危**（SQL 注入、路径遍历、客户端封禁）：首次即封禁，时长取新增的 `immediate_ban_secs`（默认 3600 秒）
+  - **高危**（SQL 注入、路径遍历、客户端封禁）：首次即封禁，时长取新增的 `immediate_ban_secs`（默认 0，即沿用 `ban_duration_secs`）
   - **可疑**（爬虫、缺少 User-Agent、私有 IP）：维持计数，达到 `threshold` 后封禁，时长取 `ban_duration_secs`
   - **启发式**（非标准 peer_id、peer_id 与 UA 不一致）：计数达到阈值后按阶梯升级
 - 新增累进封禁（默认关闭）：`escalation_enabled`、`escalation_steps`、`offense_decay_secs`。
@@ -21,12 +21,14 @@
 - 封禁日志补充档位与第几次违规：
   `Auto-ban IP 1.2.3.4 (reason: sql_injection, tier: immediate, count: 1/10, offence: 1, temporary)`
 - 兼容性：新增字段都有默认值，旧配置无需修改；`escalation_enabled` 默认 `false`，
-  与 v1.5.6 的差别只是高危档改为首次即临时封禁（1 小时），不再等到 10 次才永久封禁
+  与 v1.5.6 的差别只是高危档改为首次即封禁，不再等到 10 次
 
 ### 测试
 
 - 新增 4 个单元测试：高危档首次封禁、高危档第二次转永久、启发式档走完阶梯转永久、前科随时间衰减
 - 原有阈值测试改用 `Crawler`（可疑档），与高危档语义分开验证
+- Runtime Smoke 的 `http_autoban` 场景改为断言命中高危档后第二次请求返回 `IP auto-banned`
+  （此前编码的是"两次都返回 Client banned"的旧语义）
 
 ## v1.5.6
 

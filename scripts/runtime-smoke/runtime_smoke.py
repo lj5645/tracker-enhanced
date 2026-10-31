@@ -717,7 +717,11 @@ def http_trusted_proxy(port):
 
 def http_autoban(port, workdir):
     http_blocked(port, announce_target(PEER_BANNED), "Client banned", "http autoban violation 1")
-    http_blocked(port, announce_target(PEER_BANNED), "Client banned", "http autoban violation 2")
+    # A banned client is a high-severity reason and now bans on the first hit,
+    # so the next request is rejected by the auto-ban check before the
+    # client-ban check runs.
+    http_blocked(port, announce_target(PEER_BANNED), "IP auto-banned",
+                 "http autoban violation 2")
     http_blocked(port, announce_target(PEER_ALLOWED), "IP auto-banned",
                  "http autoban: allowed client blocked after ban")
     # Shorter than flush_interval_secs (1s in this config): the ban must
