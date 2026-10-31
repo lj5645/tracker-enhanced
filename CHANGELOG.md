@@ -1,5 +1,20 @@
 # 更新日志
 
+## v1.5.11
+
+### 自动封禁指标导出
+
+- 新增 Prometheus 指标，用于在 Grafana 上分别统计封禁数据：
+  - `aquatic_auto_bans_total{reason, tier}`（counter）：每次自动封禁事件 +1，
+    `reason` 为 `sql_injection` / `path_traversal` / `crawler` /
+    `missing_user_agent` / `client_banned` / `private_ip` /
+    `non_standard_peer_id` / `peer_id_user_agent_mismatch`
+  - `aquatic_auto_ban_active{kind}`（gauge）：当前生效中的封禁数量，
+    `kind` 为 `temporary`（临时）或 `permanent`（永久），随每轮清理刷新
+- 配套仪表盘新增「自动封禁统计」行：按原因的封禁速率趋势、当前生效封禁
+  （临时/永久）趋势、累计封禁总数、当前临时/永久数量
+- 指标仅编译 `prometheus` feature 时存在，无该 feature 时零开销
+
 ## v1.5.10
 
 ### 爬虫与缺 User-Agent 首犯即封

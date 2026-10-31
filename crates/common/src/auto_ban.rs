@@ -776,6 +776,16 @@ impl AutoBanTracker {
         };
 
         if should_ban {
+            #[cfg(feature = "prometheus")]
+            {
+                ::metrics::counter!(
+                    "aquatic_auto_bans_total",
+                    "reason" => reason.as_str(),
+                    "tier" => tier.as_str(),
+                )
+                .increment(1);
+            }
+
             if is_permanent {
                 self.persist_ip(ip);
             } else if reason == AutoBanReason::ClientBanned {
@@ -1196,6 +1206,29 @@ impl AutoBanTracker {
         let removed = before - inner.records.len();
         if removed > 0 {
             ::log::info!("Auto-ban cleanup: removed {} expired entries", removed);
+        }
+
+        // Report how many bans are actually in force right now so the
+        // dashboard can chart temporary vs permanent separately.
+        #[cfg(feature = "prometheus")]
+        {
+            let mut temporary = 0u64;
+            let mut permanent = 0u64;
+
+            for record in inner.records.values() {
+                if record.is_banned(now) {
+                    if record.permanent {
+                        permanent += 1;
+                    } else {
+                        temporary += 1;
+                    }
+                }
+            }
+
+            ::metrics::gauge!("aquatic_auto_ban_active", "kind" => "temporary")
+                .set(temporary as f64);
+            ::metrics::gauge!("aquatic_auto_ban_active", "kind" => "permanent")
+                .set(permanent as f64);
         }
     }
 }
