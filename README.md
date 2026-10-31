@@ -286,9 +286,9 @@ peer_id_allowlist_path = ""
 
 | 档位 | 违规原因 | 处置 |
 |---|---|---|
-| 高危 | SQL 注入、路径遍历 | **首次即封禁**，不等阈值 |
+| 高危 | SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent | **首次即封禁**，不等阈值 |
 | 客户端 | peer_id 命中封禁列表 / 内置吸血客户端列表 | **首次即封禁，固定临时时长，永不升级为永久** |
-| 可疑 | 爬虫/扫描器、缺少 User-Agent、私有 IP | 计数达到 `threshold` 后封禁 |
+| 可疑 | 私有 IP | 计数达到 `threshold` 后封禁 |
 | 启发式 | 非标准 peer_id、peer_id 与 User-Agent 不一致（仅 `enforce`） | 计数达到阈值后按阶梯升级 |
 
 高危及可疑档受 `immediate_ban_secs` / `ban_duration_secs` 控制；启发式档在开启

@@ -144,13 +144,19 @@ impl AutoBanReason {
     /// How severe a violation is, which decides how it is turned into a ban.
     pub fn tier(self) -> AutoBanTier {
         match self {
-            // Unambiguous attack patterns and operator-declared bans: no need
-            // to wait for a threshold.
-            Self::SqlInjection | Self::PathTraversal | Self::ClientBanned => AutoBanTier::Immediate,
-            // Pattern checks with a higher false-positive rate (bot user
-            // agents, monitoring probes, private ranges behind a proxy). These
-            // keep counting towards `threshold`.
-            Self::Crawler | Self::MissingUserAgent | Self::PrivateIp => AutoBanTier::Suspicious,
+            // Unambiguous attack patterns, operator-declared bans and bot /
+            // scanner signatures: no need to wait for a threshold. A client
+            // advertising `python-requests` or omitting User-Agent entirely is
+            // not a BitTorrent client, so the first request already proves the
+            // point.
+            Self::SqlInjection
+            | Self::PathTraversal
+            | Self::ClientBanned
+            | Self::Crawler
+            | Self::MissingUserAgent => AutoBanTier::Immediate,
+            // Pattern checks with a higher false-positive rate (private
+            // ranges behind a proxy). These keep counting towards `threshold`.
+            Self::PrivateIp => AutoBanTier::Suspicious,
             // Heuristics that cannot be verified from a single request: a
             // wrongly reported client version is not proof of abuse, so these
             // escalate gradually.
@@ -1382,19 +1388,19 @@ mod tests {
 
     #[test]
     fn test_auto_ban_threshold() {
-        // `Crawler` belongs to the counting tier: high-severity reasons ban on
-        // the first violation and are covered by their own test.
+        // `PrivateIp` belongs to the counting tier: high-severity reasons ban
+        // on the first violation and are covered by their own test.
         let tracker = AutoBanTracker::new(3, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
         assert!(!tracker.is_auto_banned(&ip));
 
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
-        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
 
         assert!(tracker.is_auto_banned(&ip));
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
     }
 
     #[test]
@@ -1402,8 +1408,8 @@ mod tests {
         let tracker = AutoBanTracker::new(2, 60, 3600, None);
         let ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
 
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
-        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert!(tracker.is_auto_banned(&ip));
     }
 
@@ -1413,10 +1419,10 @@ mod tests {
         let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
 
-        assert!(!tracker.record_violation(&ip1, AutoBanReason::Crawler));
-        assert!(!tracker.record_violation(&ip2, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip1, AutoBanReason::PrivateIp));
+        assert!(!tracker.record_violation(&ip2, AutoBanReason::PrivateIp));
 
-        assert!(tracker.record_violation(&ip1, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip1, AutoBanReason::PrivateIp));
         assert!(tracker.is_auto_banned(&ip1));
         assert!(!tracker.is_auto_banned(&ip2));
     }
@@ -1425,6 +1431,24 @@ mod tests {
     fn test_threshold_one() {
         let tracker = AutoBanTracker::new(1, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+        assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_crawler_and_missing_ua_ban_on_first_hit() {
+        // Bot user agents and missing User-Agent headers are not BitTorrent
+        // clients: like the other immediate-tier reasons they ban on the
+        // first violation, without waiting for the threshold.
+        let tracker = AutoBanTracker::new(20, 60, 3600, None);
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.is_auto_banned(&ip));
+
+        tracker.remove_ips(&[ip]);
+        assert!(!tracker.is_auto_banned(&ip));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::MissingUserAgent));
         assert!(tracker.is_auto_banned(&ip));
@@ -1442,10 +1466,10 @@ mod tests {
         let ip2 = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
 
         // Ban two IPs (each needs two violations with threshold=2)
-        assert!(!tracker.record_violation(&ip1, AutoBanReason::Crawler));
-        assert!(tracker.record_violation(&ip1, AutoBanReason::Crawler));
-        assert!(!tracker.record_violation(&ip2, AutoBanReason::Crawler));
-        assert!(tracker.record_violation(&ip2, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip1, AutoBanReason::PrivateIp));
+        assert!(tracker.record_violation(&ip1, AutoBanReason::PrivateIp));
+        assert!(!tracker.record_violation(&ip2, AutoBanReason::PrivateIp));
+        assert!(tracker.record_violation(&ip2, AutoBanReason::PrivateIp));
 
         assert_eq!(tracker.banned_count(), 2);
 
@@ -1476,7 +1500,7 @@ mod tests {
         let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
         let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
 
-        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
 
         // First flush writes the IP. A second flush before remove_ips simulates
         // a failed ip_ban_list reload: it must report the IP again so the
@@ -1556,8 +1580,8 @@ mod tests {
         let tracker = AutoBanTracker::new(2, 1, 1, None);
         let ip = IpAddr::V4(Ipv4Addr::new(10, 9, 8, 7));
 
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
-        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert!(tracker.is_auto_banned(&ip));
 
         std::thread::sleep(std::time::Duration::from_millis(1_100));
@@ -1566,7 +1590,7 @@ mod tests {
 
         // One violation after expiry must not immediately re-ban the IP: the
         // count belongs to the ban that just expired.
-        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert!(!tracker.is_auto_banned(&ip));
     }
 
@@ -1581,7 +1605,7 @@ mod tests {
         let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
         let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
 
-        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert_eq!(tracker.flush_to_file(), vec![ip]);
 
         let contents = std::fs::read_to_string(&tmp).unwrap();

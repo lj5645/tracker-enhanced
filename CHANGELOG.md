@@ -1,5 +1,29 @@
 # 更新日志
 
+## v1.5.10
+
+### 爬虫与缺 User-Agent 首犯即封
+
+- **行为变更**：`crawler`（python-requests / curl / bot 等扫描器签名）与
+  `missing_user_agent`（无 User-Agent 头）从**可疑档**（计数达到 `threshold` 才封）
+  移入**高危档**：**首次违规立即封禁**，不再等 60 秒内凑满次数
+- 动机：这类请求的 UA 本身就是明确信号——正常 BitTorrent 客户端不会声明
+  `python-requests`，也几乎不会省略 User-Agent；对无反向代理、peer_ip 即真实
+  客户端 IP 的部署，逐个计数只是拖延
+- 封禁时长仍由既有配置决定：`immediate_ban_secs = 0` 时沿用 `ban_duration_secs`
+  （默认 0 = **永久**）；如需可逆的首封，把 `immediate_ban_secs` 设为非零值
+- `private_ip` 仍留在可疑档继续计数：NAT 后部署时公网请求的源 IP 不可能是
+  私有地址，该过滤器实际只拦内网误用，保留计数缓冲以免误伤
+- 非标准 peer_id / peer_id 与 UA 不一致（启发式档）行为不变，仍按
+  `escalation_steps` 累进
+
+### 测试
+
+- 原以 `Crawler` 充当可疑档代表的 8 处计数测试改用 `PrivateIp`（仍属可疑档），
+  阈值 / 独立 IP / 过期重置 / flush 语义的验证意图不变
+- 新增 `test_crawler_and_missing_ua_ban_on_first_hit`：阈值 20 下爬虫与缺 UA
+  仍首犯即封
+
 ## v1.5.9
 
 ### 客户端封禁改为固定临时时长 + 独立持久化文件
