@@ -50,6 +50,11 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Build (UDP only)
       run: cargo build --verbose -p aquatic --no-default-features --features udp
+    # The build above only proves that the code compiles here. The privilege
+    # config is the one place with platform-dependent behaviour (fields exist
+    # everywhere, enabling them must fail on Windows), so run just those tests.
+    - name: Test privilege config behaviour
+      run: cargo test --verbose -p aquatic_common --lib privileges
 
   build-macos:
     runs-on: macos-latest
