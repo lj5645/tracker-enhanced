@@ -2104,7 +2104,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (kind) (aquatic_auto_ban_active)",
+          "expr": "max by (kind) (aquatic_auto_ban_active)",
           "legendFormat": "$kind",
           "range": true,
           "refId": "A"
@@ -2206,7 +2206,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(aquatic_auto_ban_active{kind=\"temporary\"})",
+          "expr": "max(aquatic_auto_ban_active{kind=\"temporary\"})",
           "legendFormat": "临时",
           "range": true,
           "refId": "A"
@@ -2257,7 +2257,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(aquatic_auto_ban_active{kind=\"permanent\"})",
+          "expr": "max(aquatic_auto_ban_active{kind=\"permanent\"})",
           "legendFormat": "永久",
           "range": true,
           "refId": "A"
