@@ -73,11 +73,84 @@ chmod +x aquatic-linux-x86_64
 
 运行 `./aquatic-linux-x86_64 --help` 可查看当前二进制实际包含的协议。
 
+三个协议也可以共用一份 `config.toml`（每个协议一张表）。启动时仍按协议分别启动，一条命令一个协议：
+
+```bash
+# 一份 config.toml，三个协议各自的配置都在里面
+./aquatic udp  -c config.toml &
+./aquatic http -c config.toml &
+./aquatic ws   -c config.toml &
+```
+
+配置写法见[合并配置文件](#合并配置文件)，仓库根目录的 `config.toml` 可直接作为起点。
+
 ### 5. 系统优化（推荐）
 
 ```bash
 # 一键优化（自动检测系统、网卡、CPU，配置 sysctl/ulimit/RPS/开机自启）
 bash scripts/optimize.sh
+```
+
+## 合并配置文件
+
+一份 `config.toml` 可以同时描述三个协议，每个协议一张表：
+
+```toml
+[udp.network]
+address_ipv4 = "0.0.0.0:6969"
+address_ipv6 = "[::]:6969"
+
+[http.network]
+address_ipv4 = "0.0.0.0:8080"
+address_ipv6 = "[::]:8080"
+
+[ws.network]
+address = "0.0.0.0:8081"
+```
+
+启动时按协议分别启动，一条命令一个协议：
+
+```bash
+./aquatic udp  -c config.toml &
+./aquatic http -c config.toml &
+./aquatic ws   -c config.toml &
+```
+
+规则很简单：
+
+| 命令 | 配置文件里 | 结果 |
+|---|---|---|
+| `aquatic udp -c config.toml` | 有 `[udp]` 段 | 用这段配置启动 UDP |
+| `aquatic udp -c config.toml` | 没有 `[udp]` 段 | 报错，指出文件里没有该段 |
+| `aquatic http -c config.toml` | 当前构建不含 HTTP | 报错，列出本构建支持的协议 |
+| `aquatic -c config.toml` | 无所谓 | 报错，要求写明协议 |
+| `aquatic udp -c 旧配置.toml` | 旧版单协议格式 | 按旧路径加载，行为不变 |
+
+要点：
+
+- **协议由启动命令决定，配置只提供参数**。没有 `enabled` 之类的开关，停某个协议就停对应进程（或对应 systemd unit）。
+- 未被选中的协议表**不会被解析**，所以同一份文件可以同时给 Linux（跑三个）和 Windows（只有 UDP）使用，Windows 上不必删掉 `[http]`/`[ws]`。
+- HTTP 与 WebSocket 同为 TCP，**不能共用同一端口**；UDP 与 TCP 端口空间独立，可以和 TCP 重号。仓库自带的 `config.toml` 已按 UDP 6969 / HTTP 8080 / WS 8081 错开。
+- 没写出来的字段一律取默认值。完整模板用 `aquatic -p` 生成（三段全量、带注释、端口已错开），单个协议的默认配置用 `aquatic udp -p`。
+
+生产环境建议用 systemd 模板：一份配置管三个进程，故障互不影响。
+
+```ini
+# /etc/systemd/system/aquatic@.service
+[Unit]
+Description=aquatic %i tracker
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/aquatic %i -c /etc/aquatic/config.toml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl enable --now aquatic@udp aquatic@http aquatic@ws
 ```
 
 ## 增强功能详细说明
@@ -204,35 +277,57 @@ peer_id_allowlist_path = ""
 
 ### 自动封禁
 
-当 IP 在时间窗口内非法请求次数达到阈值时自动封禁。只有已启用的检查才会产生违规记录：
-SQL 注入、路径遍历、爬虫/扫描器、缺少 User-Agent（取决于 `[request_filter]`）、
-客户端封禁、非标准 peer_id、peer_id 与 User-Agent 不一致（后两项仅在
-`enforce` 模式下计数）。已被 IP 封禁的请求会直接拒绝，不重复计数。
+当 IP 触发已启用的检查时，按**违规原因的严重程度**分级处理。只有已启用的检查才会
+产生违规记录，已被 IP 封禁的请求直接拒绝、不重复计数。
+
+| 档位 | 违规原因 | 处置 |
+|---|---|---|
+| 高危 | SQL 注入、路径遍历、客户端封禁（peer_id 命中列表） | **首次即封禁**，不等阈值 |
+| 可疑 | 爬虫/扫描器、缺少 User-Agent、私有 IP | 计数达到 `threshold` 后封禁 |
+| 启发式 | 非标准 peer_id、peer_id 与 User-Agent 不一致（仅 `enforce`） | 计数达到阈值后按阶梯升级 |
+
+高危及可疑档受 `immediate_ban_secs` / `ban_duration_secs` 控制；启发式档在开启
+`escalation_enabled` 后按 `escalation_steps` 逐级加长，阶梯用完后转为永久封禁。
+每个 IP 的违规历史保留在内存中，`offense_decay_secs` 内没有新违规就清零，
+所以偶发一次不会被当成累犯。
 
 ```toml
 [auto_ban]
 enabled = true              # 启用自动封禁
-threshold = 10              # 非法请求次数阈值
+threshold = 10              # 可疑档 / 启发式档的计数阈值
 window_secs = 60            # 统计时间窗口（秒）
-ban_duration_secs = 0       # 封禁时长（秒），0 = 永久封禁（默认值）
+ban_duration_secs = 0       # 可疑档封禁时长，0 = 永久（默认）
+immediate_ban_secs = 3600   # 高危档首次封禁时长，0 = 沿用 ban_duration_secs
 ban_list_path = "./ip-ban-list.txt"  # 永久封禁触发时立即写入，重启后仍然生效
 flush_interval_secs = 60    # 重试失败写入、热重载 ip_ban_list 的间隔（秒）
+
+# 累进封禁（默认关闭）
+escalation_enabled = false
+escalation_steps = "300,3600,86400"  # 第 1/2/3 次，用完后转为永久
+offense_decay_secs = 86400           # 24 小时无新违规则清空前科
 ```
 
-> 永久封禁在触发瞬间写入 `ban_list_path`，不需要等待 flush 间隔，因此重启不会
-> 解除封禁。使用 `ban_duration_secs = 0` 时必须同时设置：
+> `immediate_ban_secs` 默认 `3600`（1 小时）而不是"沿用永久"：反向代理配错时，
+> 所有请求的源地址都会变成代理 IP，一次 SQL 注入扫描就会把整个入口封死。
+> 1 小时后自动解封，服务能自愈。确认无误判后可设为 `0` 改为直接永久封禁。
+
+> **永久封禁在触发瞬间写入 `ban_list_path`**，不等待 flush 间隔，因此重启不会解除。
+> 只要可能产生永久封禁——`ban_duration_secs = 0`，或 `escalation_enabled = true`
+> ——就必须同时满足：
 >
 > - `ban_list_path` 非空；
 > - `[ip_ban] mode = "on"`；
 > - `ban_list_path` 与 `[ip_ban] path` 指向同一文件。
 >
 > 任一条件不满足，服务会拒绝启动并给出提示：否则封禁只会存在于内存，重启后失效。
-> `ban_duration_secs` 默认为 `0`（永久封禁）；临时封禁（`> 0`）只保存在内存中，
-> 不会写入文件，重启即失效。
+> 临时封禁（时长 `> 0`）只保存在内存中，不写入文件，重启即失效。
+
+> `escalation_steps` 是逗号分隔的秒数，非法条目会导致启动失败。`offense_decay_secs`
+> 在开启累进时必须大于 0，否则每次违规都会清空前科，永远升不到永久。
 >
 > 示例配置中 `auto_ban.enabled` 默认为 `false`：自动封禁依赖各项过滤器计数，
-> 过滤器一旦误判（例如把正常客户端识别为爬虫），大量正常用户会在短时间内被
-> 永久封禁。请先观察日志确认过滤结果，再启用自动封禁。
+> 过滤器一旦误判（例如把正常客户端识别为爬虫），大量正常用户会在短时间内被封禁。
+> 请先用日志观察过滤结果，再启用自动封禁。
 
 ### 反向代理与可信代理
 

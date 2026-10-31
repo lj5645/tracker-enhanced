@@ -44,6 +44,29 @@ pub struct AutoBanConfig {
     /// reloading ip_ban_list and removing records that ip_ban_list now covers.
     /// Minimum value is 1.
     pub flush_interval_secs: u64,
+    /// Ban duration in seconds for the first high-severity violation
+    /// (SQL injection, path traversal, banned client). 0 means "use
+    /// `ban_duration_secs`", which makes the first violation permanent.
+    ///
+    /// A short value is the safer default: a misconfigured reverse proxy makes
+    /// every request look like it comes from the proxy address, and a
+    /// permanent ban would then lock out the whole entry point. With a
+    /// non-zero value the server recovers on its own.
+    pub immediate_ban_secs: u64,
+    /// Escalate repeated offences to longer bans, ending in a permanent ban.
+    ///
+    /// Off by default: enabling it means permanent bans become possible even
+    /// when `ban_duration_secs` is non-zero, which in turn requires a
+    /// persistable ban list (see `validate_auto_ban_config`).
+    pub escalation_enabled: bool,
+    /// Ban durations, in seconds, for the 1st, 2nd, ... escalated offence of a
+    /// heuristic violation (non-standard peer id, peer id / User-Agent
+    /// mismatch). Comma-separated. Once the list is exhausted the next offence
+    /// is banned permanently. Empty means "use `ban_duration_secs`".
+    pub escalation_steps: String,
+    /// Seconds without a new offence after which an IP's offence history is
+    /// forgotten, so it starts again at the first step of the ladder.
+    pub offense_decay_secs: u64,
 }
 
 impl Default for AutoBanConfig {
@@ -58,6 +81,13 @@ impl Default for AutoBanConfig {
             ban_duration_secs: 0,
             ban_list_path: PathBuf::from("./ip-ban-list.txt"),
             flush_interval_secs: 60,
+            // One hour instead of "same as ban_duration_secs": the first
+            // high-severity hit is the most likely to be a false positive
+            // caused by a proxy, and it should not be irreversible by default.
+            immediate_ban_secs: 3600,
+            escalation_enabled: false,
+            escalation_steps: String::from("300,3600,86400"),
+            offense_decay_secs: 86_400,
         }
     }
 }
@@ -88,6 +118,77 @@ impl AutoBanReason {
             Self::PeerIdUserAgentMismatch => "peer_id_user_agent_mismatch",
         }
     }
+
+    /// How severe a violation is, which decides how it is turned into a ban.
+    pub fn tier(self) -> AutoBanTier {
+        match self {
+            // Unambiguous attack patterns and operator-declared bans: no need
+            // to wait for a threshold.
+            Self::SqlInjection | Self::PathTraversal | Self::ClientBanned => AutoBanTier::Immediate,
+            // Pattern checks with a higher false-positive rate (bot user
+            // agents, monitoring probes, private ranges behind a proxy). These
+            // keep counting towards `threshold`.
+            Self::Crawler | Self::MissingUserAgent | Self::PrivateIp => AutoBanTier::Suspicious,
+            // Heuristics that cannot be verified from a single request: a
+            // wrongly reported client version is not proof of abuse, so these
+            // escalate gradually.
+            Self::NonStandardPeerId | Self::PeerIdUserAgentMismatch => AutoBanTier::Heuristic,
+        }
+    }
+}
+
+/// Severity of an [`AutoBanReason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoBanTier {
+    /// Ban on the first violation.
+    Immediate,
+    /// Count violations, ban when `threshold` is reached.
+    Suspicious,
+    /// Count violations, then escalate ban duration with every repeat offence.
+    Heuristic,
+}
+
+impl AutoBanTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::Suspicious => "suspicious",
+            Self::Heuristic => "heuristic",
+        }
+    }
+}
+
+/// How long a ban lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BanKind {
+    Temporary(u64),
+    Permanent,
+}
+
+impl BanKind {
+    /// `0` seconds keeps the historical meaning of "permanent".
+    fn from_secs(secs: u64) -> Self {
+        if secs == 0 {
+            Self::Permanent
+        } else {
+            Self::Temporary(secs)
+        }
+    }
+}
+
+/// Parse a comma-separated list of durations, ignoring empty entries.
+fn parse_steps(raw: &str) -> Vec<u64> {
+    raw.split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+
+            if part.is_empty() {
+                None
+            } else {
+                part.parse::<u64>().ok()
+            }
+        })
+        .collect()
 }
 
 /// Record for a single IP's violation count
@@ -103,6 +204,12 @@ struct IpRecord {
     /// Whether this ban has already been appended to the ban list file.
     /// Prevents unbounded duplicate lines when a reload keeps failing.
     persisted: bool,
+    /// Number of bans this IP has received, kept across ban expiry so that a
+    /// repeat offender can be escalated instead of starting from scratch.
+    offenses: u32,
+    /// When the last ban was issued, used to forget offence history after
+    /// `offense_decay_secs` without a new violation.
+    last_offense: Option<Instant>,
 }
 
 impl IpRecord {
@@ -166,6 +273,9 @@ fn append_ip_line(path: &Path, ip: &IpAddr) -> ::std::io::Result<()> {
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
 pub struct AutoBanTracker {
     inner: RwLock<AutoBanInner>,
+    /// Read-only policy, kept out of the lock so it is readable while a record
+    /// is mutably borrowed.
+    policy: AutoBanPolicy,
     ban_list_path: Option<PathBuf>,
     /// Serializes appends to the ban list. Multiple socket workers can ban
     /// different IPs at the same time and `write_all` is not atomic.
@@ -185,8 +295,127 @@ struct AutoBanInner {
     last_overflow_log: Option<Instant>,
 }
 
+/// Immutable escalation policy. Kept outside the record lock so it can be read
+/// while a record is being mutated.
+struct AutoBanPolicy {
+    /// Duration of the first high-severity ban; `0` means "inherit
+    /// `ban_duration_secs`".
+    immediate_ban_secs: u64,
+    escalation_enabled: bool,
+    /// Escalation ladder for heuristic violations, already parsed.
+    escalation_steps: Vec<u64>,
+    offense_decay_secs: u64,
+}
+
+impl AutoBanPolicy {
+    fn ban_kind(&self, tier: AutoBanTier, offenses: u32, fallback_secs: u64) -> BanKind {
+        match tier {
+            AutoBanTier::Immediate => {
+                // Second high-severity offence by the same IP is deliberate.
+                if self.escalation_enabled && offenses >= 2 {
+                    BanKind::Permanent
+                } else if self.immediate_ban_secs == 0 {
+                    BanKind::from_secs(fallback_secs)
+                } else {
+                    BanKind::from_secs(self.immediate_ban_secs)
+                }
+            }
+            AutoBanTier::Suspicious => BanKind::from_secs(fallback_secs),
+            AutoBanTier::Heuristic => {
+                if !self.escalation_enabled {
+                    return BanKind::from_secs(fallback_secs);
+                }
+
+                let index = offenses.saturating_sub(1) as usize;
+
+                match self.escalation_steps.get(index) {
+                    Some(secs) => BanKind::from_secs(*secs),
+                    None => BanKind::Permanent,
+                }
+            }
+        }
+    }
+}
+
+/// Count one more offence for this IP, forgetting the history when the last
+/// offence is older than `decay_secs`.
+fn register_offense(record: &mut IpRecord, now: Instant, decay_secs: u64) -> u32 {
+    let decayed = match record.last_offense {
+        Some(last) => now.duration_since(last).as_secs() >= decay_secs,
+        None => true,
+    };
+
+    if decayed {
+        record.offenses = 0;
+    }
+
+    record.offenses = record.offenses.saturating_add(1);
+    record.last_offense = Some(now);
+    record.offenses
+}
+
+/// Apply a ban to a record. Overflow degrades to a permanent ban: panicking
+/// while holding the write lock would poison it for every later request.
+fn apply_ban(record: &mut IpRecord, kind: BanKind, now: Instant) {
+    match kind {
+        BanKind::Permanent => {
+            record.banned_until = None;
+            record.permanent = true;
+        }
+        BanKind::Temporary(secs) => match now.checked_add(Duration::from_secs(secs)) {
+            Some(until) => {
+                record.banned_until = Some(until);
+                record.permanent = false;
+            }
+            None => {
+                record.banned_until = None;
+                record.permanent = true;
+            }
+        },
+    }
+
+    record.persisted = false;
+}
+
 impl AutoBanTracker {
+    /// Construct a tracker with the default escalation policy. Kept for tests
+    /// and for callers that only care about the threshold behaviour.
     pub fn new(threshold: u32, window_secs: u64, ban_duration_secs: u64, ban_list_path: Option<PathBuf>) -> Self {
+        let policy = AutoBanConfig::default();
+
+        Self::with_policy(
+            threshold,
+            window_secs,
+            ban_duration_secs,
+            ban_list_path,
+            &policy,
+        )
+    }
+
+    /// Construct a tracker from the `[auto_ban]` configuration section.
+    pub fn from_config(config: &AutoBanConfig) -> Self {
+        let ban_list_path = if config.ban_list_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(config.ban_list_path.clone())
+        };
+
+        Self::with_policy(
+            config.threshold,
+            config.window_secs,
+            config.ban_duration_secs,
+            ban_list_path,
+            config,
+        )
+    }
+
+    fn with_policy(
+        threshold: u32,
+        window_secs: u64,
+        ban_duration_secs: u64,
+        ban_list_path: Option<PathBuf>,
+        config: &AutoBanConfig,
+    ) -> Self {
         Self {
             inner: RwLock::new(AutoBanInner {
                 records: HashMap::new(),
@@ -197,6 +426,12 @@ impl AutoBanTracker {
                 last_capacity_cleanup: None,
                 last_overflow_log: None,
             }),
+            policy: AutoBanPolicy {
+                immediate_ban_secs: config.immediate_ban_secs,
+                escalation_enabled: config.escalation_enabled,
+                escalation_steps: parse_steps(&config.escalation_steps),
+                offense_decay_secs: config.offense_decay_secs,
+            },
             ban_list_path,
             write_lock: Mutex::new(()),
         }
@@ -261,6 +496,9 @@ impl AutoBanTracker {
                 }
             }
 
+            let policy = &self.policy;
+            let tier = reason.tier();
+
             let (should_ban, is_permanent) = match inner.records.get_mut(ip) {
                 Some(record) => {
                     // Reset if outside window
@@ -271,7 +509,8 @@ impl AutoBanTracker {
 
                     // Clear expired ban. Resetting the count as well means a single
                     // new violation after the ban expires does not immediately
-                    // re-ban the IP.
+                    // re-ban the IP. The offence history is kept separately so a
+                    // repeat offender can be escalated.
                     if !record.permanent {
                         if let Some(banned_until) = record.banned_until {
                             if now >= banned_until {
@@ -285,68 +524,67 @@ impl AutoBanTracker {
 
                     record.count += 1;
 
-                    if record.count >= threshold && !record.is_banned(now) {
-                        if ban_duration_secs > 0 {
-                            // `Instant + Duration` panics on overflow; the
-                            // startup validation bounds the value, but fall
-                            // back to a permanent ban instead of panicking
-                            // while holding the write lock.
-                            match now.checked_add(Duration::from_secs(ban_duration_secs)) {
-                                Some(until) => {
-                                    record.banned_until = Some(until);
-                                    record.permanent = false;
-                                }
-                                None => {
-                                    record.banned_until = None;
-                                    record.permanent = true;
-                                }
-                            }
-                        } else {
-                            record.banned_until = None;
-                            record.permanent = true;
-                        }
-                        record.persisted = false;
+                    // High-severity violations are banned on the first hit;
+                    // everything else has to reach the threshold.
+                    let triggered = tier == AutoBanTier::Immediate || record.count >= threshold;
+
+                    if triggered && !record.is_banned(now) {
+                        let offenses =
+                            register_offense(record, now, policy.offense_decay_secs);
+                        let kind = policy.ban_kind(tier, offenses, ban_duration_secs);
+
+                        apply_ban(record, kind, now);
+
                         (true, record.permanent)
                     } else {
                         (false, false)
                     }
                 }
                 None => {
-                    let should = threshold <= 1;
-                    let (banned_until, permanent) = if should {
-                        if ban_duration_secs > 0 {
-                            match now.checked_add(Duration::from_secs(ban_duration_secs)) {
-                                Some(until) => (Some(until), false),
-                                None => (None, true),
-                            }
-                        } else {
-                            (None, true)
-                        }
-                    } else {
-                        (None, false)
+                    let triggered = tier == AutoBanTier::Immediate || threshold <= 1;
+
+                    let mut record = IpRecord {
+                        count: 1,
+                        first_violation: now,
+                        banned_until: None,
+                        permanent: false,
+                        persisted: false,
+                        offenses: 0,
+                        last_offense: None,
                     };
 
-                    inner.records.insert(
-                        *ip,
-                        IpRecord {
-                            count: 1,
-                            first_violation: now,
-                            banned_until,
-                            permanent,
-                            persisted: false,
-                        },
-                    );
-                    (should, permanent)
+                    if triggered {
+                        let offenses =
+                            register_offense(&mut record, now, policy.offense_decay_secs);
+                        let kind = policy.ban_kind(tier, offenses, ban_duration_secs);
+
+                        apply_ban(&mut record, kind, now);
+                    }
+
+                    let permanent = record.permanent;
+
+                    inner.records.insert(*ip, record);
+
+                    (triggered, permanent)
                 }
             };
 
             if should_ban {
+                let (count, offenses, permanent) = inner
+                    .records
+                    .get(ip)
+                    .map(|record| (record.count, record.offenses, record.permanent))
+                    .unwrap_or((0, 0, false));
+
                 ::log::warn!(
-                    "Auto-ban IP {} (reason: {}, count: {}/{})",
+                    "Auto-ban IP {} (reason: {}, tier: {}, count: {}/{}, offence: {}, {})",
                     ip,
                     reason.as_str(),
-                    inner.records.get(ip).map(|r| r.count).unwrap_or(0),
+                    tier.as_str(),
+                    count,
                     threshold,
+                    offenses,
+                    if permanent { "permanent" } else { "temporary" },
                 );
             }
 
@@ -431,7 +669,11 @@ impl AutoBanTracker {
         let (banned, mut pending_write) = {
             let inner = self.inner.read().unwrap();
 
-            if inner.ban_duration_secs != 0 {
+            // Only permanent bans are written to file: the list format has no
+            // expiration timestamps. Escalation can still produce permanent
+            // bans while `ban_duration_secs` is non-zero, so the guard has to
+            // consider it as well.
+            if inner.ban_duration_secs != 0 && !self.policy.escalation_enabled {
                 return Vec::new();
             }
 
@@ -623,7 +865,54 @@ pub fn validate_auto_ban_config(
         ));
     }
 
-    if auto.ban_duration_secs != 0 {
+    if auto.immediate_ban_secs > MAX_BAN_DURATION_SECS {
+        return Err(anyhow::anyhow!(
+            "auto_ban.immediate_ban_secs must be at most {} seconds (10 years), got {}; \
+             larger values overflow Instant arithmetic",
+            MAX_BAN_DURATION_SECS,
+            auto.immediate_ban_secs,
+        ));
+    }
+
+    for entry in auto.escalation_steps.split(',') {
+        let entry = entry.trim();
+
+        if entry.is_empty() {
+            continue;
+        }
+
+        match entry.parse::<u64>() {
+            Ok(secs) if secs <= MAX_BAN_DURATION_SECS => (),
+            Ok(secs) => {
+                return Err(anyhow::anyhow!(
+                    "auto_ban.escalation_steps entry '{}' must be at most {} seconds \
+                     (10 years), got {}",
+                    entry,
+                    MAX_BAN_DURATION_SECS,
+                    secs,
+                ))
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "auto_ban.escalation_steps must be a comma-separated list of \
+                     seconds, but '{}' is not a number",
+                    entry,
+                ))
+            }
+        }
+    }
+
+    if auto.escalation_enabled && auto.offense_decay_secs == 0 {
+        return Err(anyhow::anyhow!(
+            "auto_ban.offense_decay_secs must be at least 1 when escalation is enabled: \
+             a value of 0 would forget the offence history immediately and escalation \
+             would never happen"
+        ));
+    }
+
+    // A permanent ban can come from `ban_duration_secs == 0` or from
+    // escalation, and both need a list that is loaded again after a restart.
+    if auto.ban_duration_secs != 0 && !auto.escalation_enabled {
         return Ok(());
     }
 
@@ -712,17 +1001,19 @@ mod tests {
 
     #[test]
     fn test_auto_ban_threshold() {
+        // `Crawler` belongs to the counting tier: high-severity reasons ban on
+        // the first violation and are covered by their own test.
         let tracker = AutoBanTracker::new(3, 60, 3600, None);
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
         assert!(!tracker.is_auto_banned(&ip));
 
-        assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
-        assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
-        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip, AutoBanReason::Crawler));
 
         assert!(tracker.is_auto_banned(&ip));
-        assert!(!tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert!(!tracker.record_violation(&ip, AutoBanReason::Crawler));
     }
 
     #[test]
@@ -741,10 +1032,10 @@ mod tests {
         let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
 
-        assert!(!tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
-        assert!(!tracker.record_violation(&ip2, AutoBanReason::SqlInjection));
+        assert!(!tracker.record_violation(&ip1, AutoBanReason::Crawler));
+        assert!(!tracker.record_violation(&ip2, AutoBanReason::Crawler));
 
-        assert!(tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
+        assert!(tracker.record_violation(&ip1, AutoBanReason::Crawler));
         assert!(tracker.is_auto_banned(&ip1));
         assert!(!tracker.is_auto_banned(&ip2));
     }
@@ -770,8 +1061,8 @@ mod tests {
         let ip2 = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
 
         // Ban two IPs (each needs two violations with threshold=2)
-        assert!(!tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
-        assert!(tracker.record_violation(&ip1, AutoBanReason::SqlInjection));
+        assert!(!tracker.record_violation(&ip1, AutoBanReason::Crawler));
+        assert!(tracker.record_violation(&ip1, AutoBanReason::Crawler));
         assert!(!tracker.record_violation(&ip2, AutoBanReason::Crawler));
         assert!(tracker.record_violation(&ip2, AutoBanReason::Crawler));
 
@@ -1086,5 +1377,121 @@ mod tests {
             Path::new("./aquatic-auto-ban-not-created.txt"),
             Path::new("./aquatic-auto-ban-other.txt"),
         ));
+    }
+
+    fn policy_config() -> AutoBanConfig {
+        AutoBanConfig {
+            enabled: true,
+            threshold: 10,
+            window_secs: 60,
+            ban_duration_secs: 3600,
+            ban_list_path: PathBuf::new(),
+            immediate_ban_secs: 1,
+            escalation_enabled: true,
+            escalation_steps: String::from("1,1"),
+            offense_decay_secs: 3600,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_immediate_tier_bans_on_first_violation() {
+        let tracker = AutoBanTracker::from_config(&policy_config());
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
+
+        // SQL injection is high severity: one hit is enough even though the
+        // threshold is 10.
+        assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
+        assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_immediate_tier_second_offence_is_permanent() {
+        let tracker = AutoBanTracker::from_config(&policy_config());
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11));
+
+        // First offence: temporary (immediate_ban_secs = 1).
+        assert!(tracker.record_violation(&ip, AutoBanReason::PathTraversal));
+
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+        assert!(!tracker.is_auto_banned(&ip));
+
+        // Second offence: escalated to a permanent ban.
+        assert!(tracker.record_violation(&ip, AutoBanReason::PathTraversal));
+
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+        assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_heuristic_tier_escalates_through_the_ladder() {
+        let mut config = policy_config();
+
+        config.threshold = 1;
+
+        let tracker = AutoBanTracker::from_config(&config);
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 12));
+
+        // Offence 1 and 2 use the ladder (1 second each), offence 3 has no
+        // step left and becomes permanent.
+        for _ in 0..2 {
+            assert!(tracker.record_violation(&ip, AutoBanReason::NonStandardPeerId));
+
+            std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+            assert!(!tracker.is_auto_banned(&ip));
+        }
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::NonStandardPeerId));
+
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+        assert!(tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_offence_history_decays() {
+        let mut config = policy_config();
+
+        config.threshold = 1;
+        config.offense_decay_secs = 1;
+
+        let tracker = AutoBanTracker::from_config(&config);
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 13));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::PeerIdUserAgentMismatch));
+
+        // Long enough for the ban to expire and for the offence history to be
+        // forgotten, so the next offence starts at the first step again.
+        std::thread::sleep(std::time::Duration::from_millis(2_200));
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::PeerIdUserAgentMismatch));
+
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+        assert!(!tracker.is_auto_banned(&ip));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_escalation_steps() {
+        let ip_ban = IpBanConfig::default();
+
+        let not_a_number = AutoBanConfig {
+            enabled: true,
+            escalation_enabled: true,
+            escalation_steps: String::from("300,abc"),
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&not_a_number, &ip_ban).is_err());
+
+        let zero_decay = AutoBanConfig {
+            enabled: true,
+            escalation_enabled: true,
+            offense_decay_secs: 0,
+            ..Default::default()
+        };
+        assert!(validate_auto_ban_config(&zero_decay, &ip_ban).is_err());
     }
 }

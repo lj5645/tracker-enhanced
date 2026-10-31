@@ -1,0 +1,68 @@
+# aquatic 合并配置文件（config.toml）
+#
+# 一个文件描述三个协议，启动哪个协议由命令行决定：
+#
+#   ./aquatic udp  -c config.toml
+#   ./aquatic http -c config.toml
+#   ./aquatic ws   -c config.toml
+#
+# 只有命令行选中的那张表会被解析，其余表不会影响启动，可以三段都留着。
+# 没写出来的字段一律取默认值；完整带注释的默认模板用 `./aquatic -p` 生成，
+# 单个协议的默认配置用 `./aquatic udp -p`。
+#
+# 端口提示：HTTP 与 WebSocket 同为 TCP，必须使用不同端口；UDP 与 TCP 的端口
+# 空间相互独立，UDP 可以与某个 TCP 端口重号。
+#
+# 指标端点没有认证，示例只监听 127.0.0.1。
+
+# ============================================================
+# BitTorrent over UDP
+# ============================================================
+[udp]
+# 0 = 按 CPU 核心数自动设置
+socket_workers = 1
+log_level = "error"
+
+[udp.network]
+address_ipv4 = "0.0.0.0:6969"
+address_ipv6 = "[::]:6969"
+
+[udp.statistics]
+run_prometheus_endpoint = true
+prometheus_endpoint_address = "127.0.0.1:9001"
+
+# ============================================================
+# BitTorrent over HTTP（仅 Linux 5.8+）
+# ============================================================
+[http]
+socket_workers = 1
+swarm_workers = 1
+log_level = "error"
+
+[http.network]
+address_ipv4 = "0.0.0.0:8080"
+address_ipv6 = "[::]:8080"
+# 启用 TLS 时填写证书与私钥路径，并用 SIGUSR1 热加载
+enable_tls = false
+tls_certificate_path = ""
+tls_private_key_path = ""
+
+[http.metrics]
+run_prometheus_endpoint = true
+prometheus_endpoint_address = "127.0.0.1:9002"
+
+# ============================================================
+# WebTorrent over WebSocket（仅 Linux 5.8+）
+# ============================================================
+[ws]
+socket_workers = 1
+swarm_workers = 1
+log_level = "error"
+
+[ws.network]
+address = "0.0.0.0:8081"
+only_ipv6 = false
+
+[ws.metrics]
+run_prometheus_endpoint = true
+prometheus_endpoint_address = "127.0.0.1:9003"

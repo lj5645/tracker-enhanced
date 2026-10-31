@@ -38,6 +38,22 @@ pub struct Options {
 }
 
 impl Options {
+    pub fn config_file(&self) -> Option<&str> {
+        self.config_file.as_deref()
+    }
+
+    pub fn print_config(&self) -> bool {
+        self.print_config
+    }
+
+    pub fn print_parsed_config(&self) -> bool {
+        self.print_parsed_config
+    }
+
+    pub fn print_version(&self) -> bool {
+        self.print_version
+    }
+
     pub fn parse_args<I>(mut arg_iter: I) -> Result<Options, Option<String>>
     where
         I: Iterator<Item = String>,
@@ -98,6 +114,46 @@ pub fn run_app_with_cli_and_config<T>(
             1
         }
     })
+}
+
+/// Run an application with an already parsed configuration. Used by the
+/// combined binary, which resolves merged configuration files itself before
+/// handing the resulting protocol configuration over.
+pub fn run_app_with_config<T>(
+    app_fn: fn(T) -> anyhow::Result<()>,
+    config: T,
+    print_parsed_config: bool,
+) -> !
+where
+    T: Config,
+{
+    if let Some(log_level) = config.get_log_level() {
+        if let Err(err) = start_logger(log_level) {
+            eprintln!("Error: {:#}", err);
+
+            ::std::process::exit(1);
+        }
+    }
+
+    if print_parsed_config {
+        println!("Running with configuration: {:#?}", config);
+    }
+
+    ::std::process::exit(match app_fn(config) {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("Error: {:#}", err);
+
+            1
+        }
+    })
+}
+
+/// Print a version line for a binary that has no protocol context yet.
+pub fn print_version_info(version: &str) {
+    let commit_info = get_commit_info();
+
+    println!("{}{}", version, commit_info);
 }
 
 fn run_inner<T>(

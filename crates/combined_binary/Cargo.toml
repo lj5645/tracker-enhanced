@@ -36,7 +36,9 @@ mimalloc = [
 cpu-pinning = ["aquatic_http?/cpu-pinning"]
 
 [dependencies]
+anyhow = "1"
 aquatic_common.workspace = true
+aquatic_toml_config.workspace = true
 aquatic_http = { workspace = true, optional = true }
 aquatic_udp = { workspace = true, optional = true }
 aquatic_ws = { workspace = true, optional = true }

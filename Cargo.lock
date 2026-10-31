@@ -119,10 +119,12 @@ checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 
 [[package]]
 name = "aquatic"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
+ "anyhow",
  "aquatic_common",
  "aquatic_http",
+ "aquatic_toml_config",
  "aquatic_udp",
  "aquatic_ws",
  "mimalloc",
@@ -130,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_bencher"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_udp",
@@ -151,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_common"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "ahash 0.8.11",
  "anyhow",
@@ -180,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_http"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -217,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_http_load_test"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -240,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_http_protocol"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "bendy",
@@ -260,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_peer_id"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "compact_str 0.8.1",
  "hex",
@@ -272,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_toml_config"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "aquatic_toml_config_derive",
  "quickcheck",
@@ -283,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_toml_config_derive"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -292,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_udp"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -331,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_udp_load_test"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -350,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_udp_protocol"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "aquatic_peer_id",
  "byteorder",
@@ -363,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_ws"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -400,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_ws_load_test"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "aquatic_common",
@@ -424,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "aquatic_ws_protocol"
-version = "1.5.5"
+version = "1.5.7"
 dependencies = [
  "anyhow",
  "criterion 0.5.1",

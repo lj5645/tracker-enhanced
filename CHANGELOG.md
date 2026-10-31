@@ -1,5 +1,65 @@
 # 更新日志
 
+## v1.5.7
+
+### 自动封禁分级
+
+- 违规原因按严重程度分为三档，不再一律走计数：
+  - **高危**（SQL 注入、路径遍历、客户端封禁）：首次即封禁，时长取新增的 `immediate_ban_secs`（默认 3600 秒）
+  - **可疑**（爬虫、缺少 User-Agent、私有 IP）：维持计数，达到 `threshold` 后封禁，时长取 `ban_duration_secs`
+  - **启发式**（非标准 peer_id、peer_id 与 UA 不一致）：计数达到阈值后按阶梯升级
+- 新增累进封禁（默认关闭）：`escalation_enabled`、`escalation_steps`、`offense_decay_secs`。
+  同一 IP 反复违规时按阶梯加长，阶梯用完后转为永久封禁；`offense_decay_secs` 内没有新违规则清空前科
+- 违规历史此前随临时封禁到期一起清零，导致"再犯"与"初犯"完全等价、永远升不到永久封禁；
+  现在单独保存（`IpRecord::offenses`），只按 `offense_decay_secs` 衰减
+- 启动校验加强：
+  - `immediate_ban_secs` 与每个 `escalation_steps` 条目都必须不超过 10 年
+  - `escalation_steps` 含非数字条目时拒绝启动
+  - 开启累进后 `offense_decay_secs` 必须大于 0
+  - **永久封禁的持久化校验不再只由 `ban_duration_secs = 0` 触发**：开启累进同样会产生永久封禁，
+    因此也必须配置可持久化的封禁列表，否则拒绝启动
+- 封禁日志补充档位与第几次违规：
+  `Auto-ban IP 1.2.3.4 (reason: sql_injection, tier: immediate, count: 1/10, offence: 1, temporary)`
+- 兼容性：新增字段都有默认值，旧配置无需修改；`escalation_enabled` 默认 `false`，
+  与 v1.5.6 的差别只是高危档改为首次即临时封禁（1 小时），不再等到 10 次才永久封禁
+
+### 测试
+
+- 新增 4 个单元测试：高危档首次封禁、高危档第二次转永久、启发式档走完阶梯转永久、前科随时间衰减
+- 原有阈值测试改用 `Crawler`（可疑档），与高危档语义分开验证
+
+## v1.5.6
+
+### 合并配置文件
+
+- 一份 `config.toml` 可以同时描述三个协议，每个协议一张表（`[udp]` / `[http]` / `[ws]`），共享设置（封禁列表路径、日志级别、自动封禁阈值等）只需维护一处：
+
+  ```bash
+  aquatic udp  -c config.toml &
+  aquatic http -c config.toml &
+  aquatic ws   -c config.toml &
+  ```
+
+  - 协议仍由启动命令决定，一个进程一个协议；不为"该跑哪个"增加配置开关
+  - 只有被选中的协议表会被解析，未选中的表原样忽略，因此同一份文件可以在 Linux（跑三个）与 Windows（只有 UDP）之间共用
+  - 命令行给的协议在文件里没有对应表时报错 `Config file <path> has no [xxx] section`
+  - 给了 `--config-file` 却没有协议参数时报错，并列出本构建支持的协议
+  - 文件里没有 `[udp]`/`[http]`/`[ws]` 表时按旧版单协议文件处理，`aquatic udp -c aquatic-udp-config.toml` 行为不变
+
+- **`aquatic -p` 生成合并模板**：不带协议时打印三段完整配置（带注释，约 320 行）。模板已错开端口（UDP 6969 / HTTP 8080 / WS 8081，指标 9001–9003 仅监听本机），避免 HTTP 与 WebSocket 同为 TCP 时的端口冲突。`aquatic udp -p` 仍输出单协议默认配置，与之前逐字节一致
+
+- **仓库新增 `config.toml`**：合并格式的最小可用示例，只写常用字段，其余取默认值
+
+### 变更
+
+- `--help` 的用法行改为 `Usage: <path> [PROTOCOL] [OPTIONS]`
+- 不带协议执行 `-v` 时打印统一二进制的版本号（与协议 crate 同源，字符串一致）
+- 只给 `--config-file` 而不给协议时不再尝试从配置文件推断，直接报错并列出可用协议
+
+### 测试
+
+- 新增 `multiconfig` 单元测试：合并段提取、缺失协议表报错、旧格式透传、模板段落重命名
+
 ## v1.5.5
 
 ### 修复

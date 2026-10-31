@@ -113,17 +113,7 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
 
     // Initialize auto-ban tracker if enabled
     let state = if config.auto_ban.enabled {
-        let ban_list_path = if config.auto_ban.ban_list_path.as_os_str().is_empty() {
-            None
-        } else {
-            Some(config.auto_ban.ban_list_path.clone())
-        };
-        let tracker = Arc::new(AutoBanTracker::new(
-            config.auto_ban.threshold,
-            config.auto_ban.window_secs,
-            config.auto_ban.ban_duration_secs,
-            ban_list_path,
-        ));
+        let tracker = Arc::new(AutoBanTracker::from_config(&config.auto_ban));
         State {
             auto_ban_tracker: Some(tracker),
             ..state
