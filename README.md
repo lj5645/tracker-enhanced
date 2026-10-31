@@ -426,25 +426,27 @@ GRAFANA_ADMIN_PASSWORD='strong-password' docker compose up -d
 
 ### Grafana 面板
 
-`monitoring/grafana/provisioning/dashboards/` 提供两个独立面板，各自用 `job` 标签锁定一个协议实例，互不干扰：
+`monitoring/grafana/provisioning/dashboards/aquatic-dashboard.json`（uid `aquatic-tracker`）是一个合并面板，同时展示 UDP 与 TCP（HTTP）两个实例：
 
-| 面板 | uid | 内容 |
-|---|---|---|
-| Aquatic UDP Tracker 监控面板 | `aquatic-udp-dash` | 种子、Peer、请求量、错误率、流量趋势 |
-| Aquatic HTTP Tracker 监控面板 | `aquatic-http-dash` | 种子、Peer（v4 / v6）、主机资源 |
+| 区块 | 内容 |
+|---|---|
+| Tracker 统计 | 种子数、Peer 数（v4 / v6 / 合计）—— 每个面板两条序列，UDP 与 TCP 并排 |
+| 请求与流量 | 请求数、错误率、Announce、已过滤请求、请求类型、出入流量（**仅 UDP**） |
+| 系统资源 | CPU / 内存 / 网卡，来自 node-exporter |
+| 趋势对比 | 种子数、Peer 数的两条曲线 |
+
+颜色约定通过 `byName` override 固定，不受查询顺序影响：**UDP = 蓝 `#5794F2`，TCP = 橙 `#FF9830`**。
 
 **两个协议导出的指标不一样**，这是上游实现的差异，不是配置问题：
 
-| 指标 | UDP | HTTP |
+| 指标 | UDP | HTTP（TCP） |
 |---|---|---|
 | `aquatic_torrents` / `aquatic_peers` | ✅ | ✅ |
 | `aquatic_requests_total` / `aquatic_responses_total` | ✅ | ❌ |
 | `aquatic_rx_bytes` / `aquatic_tx_bytes` | ✅ | ❌ |
 | `aquatic_active_connections` | ❌ | ❌ |
 
-所以 HTTP 面板只有种子和 Peer 两类数据，请求量、错误率、流量这类图表只在 UDP 面板里有。HTTP 面板里放了一个「指标说明」文本块标注这一点，避免误以为是面板坏了。
-
-`node_*` 主机指标来自 node-exporter，与协议无关，两个面板里都有。
+所以「请求与流量」整块只有 UDP 一条线，没有 TCP 对比——面板里放了文本说明标注这一点，避免误以为是面板坏了。`aquatic_active_connections` 任何构建都不导出，已从面板中移除。
 
 ## 编译
 

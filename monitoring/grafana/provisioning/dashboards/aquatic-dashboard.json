@@ -19,7 +19,626 @@
       },
       "id": 100,
       "panels": [],
-      "title": "Tracker 统计",
+      "title": "Tracker 统计（相同指标：UDP vs TCP）",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{ip_version=\"4\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{ip_version=\"4\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "种子数量 v4 (万)",
+      "description": "IPv4 活跃种子数；TCP 即 HTTP tracker",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{ip_version=\"6\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{ip_version=\"6\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "种子数量 v6 (万)",
+      "description": "IPv6 活跃种子数",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{ip_version=\"4\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{ip_version=\"4\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "在线 Peer v4 (万)",
+      "description": "IPv4 在线 peer 数",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{ip_version=\"6\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{ip_version=\"6\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "在线 Peer v6 (万)",
+      "description": "IPv6 在线 peer 数",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_torrents{job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "种子合计 (万)",
+      "description": "全部活跃种子数",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_peers{job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "Peer 合计 (万)",
+      "description": "全部在线 peer 数",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 400,
+      "panels": [],
+      "title": "请求与流量（仅 UDP tracker 提供）",
       "type": "row"
     },
     {
@@ -51,69 +670,9 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 1
+        "y": 7
       },
-      "id": 1,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_peers{ip_version=\"4\",job=\"aquatic-udp\"}) / 10000",
-          "refId": "A"
-        }
-      ],
-      "title": "在线 Peer (万)",
-      "description": "当前连接的 Peer 总数",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 1
-      },
-      "id": 2,
+      "id": 7,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -139,67 +698,7 @@
         }
       ],
       "title": "请求总数 (万)",
-      "description": "收到的 announce + scrape 请求数",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "none",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 1
-      },
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_torrents{ip_version=\"4\",job=\"aquatic-udp\"}) / 10000",
-          "refId": "A"
-        }
-      ],
-      "title": "种子数量 (万)",
-      "description": "当前活跃种子总数",
+      "description": "announce + scrape 请求数",
       "type": "stat"
     },
     {
@@ -239,10 +738,10 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 12,
-        "y": 1
+        "x": 4,
+        "y": 7
       },
-      "id": 4,
+      "id": 8,
       "options": {
         "orientation": "auto",
         "reduceOptions": {
@@ -266,7 +765,7 @@
         }
       ],
       "title": "错误率",
-      "description": "被过滤请求百分比",
+      "description": "仅 UDP",
       "type": "gauge"
     },
     {
@@ -297,8 +796,8 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 16,
-        "y": 1
+        "x": 8,
+        "y": 7
       },
       "id": 9,
       "options": {
@@ -326,7 +825,7 @@
         }
       ],
       "title": "Announce 总数 (万)",
-      "description": "Peer 宣告请求总数",
+      "description": "成功的 announce 响应数",
       "type": "stat"
     },
     {
@@ -344,7 +843,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               }
             ]
@@ -357,10 +856,10 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 20,
-        "y": 1
+        "x": 12,
+        "y": 7
       },
-      "id": 11,
+      "id": 10,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -386,8 +885,228 @@
         }
       ],
       "title": "已过滤请求 (万)",
-      "description": "被安全过滤器拦截的请求",
+      "description": "被拒绝或过滤的请求数",
       "type": "stat"
+    },
+    {
+      "id": 11,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**这一行只有 UDP 数据**\n\nHTTP（TCP）tracker 只导出 `aquatic_torrents` 和 `aquatic_peers` 两个 gauge，请求数、响应数、收发字节这些计数器仅 UDP 实现。\n\n所以请求量 / 错误率 / 流量类图表没有 TCP 对比线，不是漏配。"
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-udp\"})",
+          "legendFormat": "Announce",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"scrape\",job=\"aquatic-udp\"})",
+          "legendFormat": "Scrape",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"})",
+          "legendFormat": "已过滤",
+          "refId": "C"
+        }
+      ],
+      "title": "请求类型统计（UDP）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(aquatic_rx_bytes{job=\"aquatic-udp\"}[5m]))",
+          "legendFormat": "入站",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(aquatic_tx_bytes{job=\"aquatic-udp\"}[5m]))",
+          "legendFormat": "出站",
+          "refId": "B"
+        }
+      ],
+      "title": "入/出流量趋势（UDP）",
+      "type": "timeseries"
     },
     {
       "collapsed": false,
@@ -395,9 +1114,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 19
       },
-      "id": 200,
+      "id": 500,
       "panels": [],
       "title": "系统资源",
       "type": "row"
@@ -440,7 +1159,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 7
+        "y": 20
       },
       "id": 101,
       "options": {
@@ -507,7 +1226,7 @@
         "h": 5,
         "w": 4,
         "x": 4,
-        "y": 7
+        "y": 20
       },
       "id": 102,
       "options": {
@@ -565,7 +1284,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 7
+        "y": 20
       },
       "id": 103,
       "options": {
@@ -625,7 +1344,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 7
+        "y": 20
       },
       "id": 104,
       "options": {
@@ -685,7 +1404,7 @@
         "h": 5,
         "w": 4,
         "x": 16,
-        "y": 7
+        "y": 20
       },
       "id": 105,
       "options": {
@@ -745,7 +1464,7 @@
         "h": 5,
         "w": 4,
         "x": 20,
-        "y": 7
+        "y": 20
       },
       "id": 106,
       "options": {
@@ -834,7 +1553,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 25
       },
       "id": 107,
       "options": {
@@ -933,7 +1652,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 25
       },
       "id": 108,
       "options": {
@@ -980,11 +1699,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 19
+        "y": 32
       },
-      "id": 300,
+      "id": 600,
       "panels": [],
-      "title": "Tracker 详细统计",
+      "title": "趋势对比（UDP vs TCP）",
       "type": "row"
     },
     {
@@ -1039,21 +1758,52 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 33
       },
-      "id": 5,
+      "id": 20,
       "options": {
         "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "displayMode": "table",
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1068,8 +1818,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_peers{ip_version=\"4\",job=\"aquatic-udp\"})",
-          "legendFormat": "Peer v4",
+          "expr": "sum(aquatic_torrents{job=\"aquatic-udp\"})",
+          "legendFormat": "种子 UDP",
           "refId": "A"
         },
         {
@@ -1077,12 +1827,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_torrents{ip_version=\"4\",job=\"aquatic-udp\"})",
-          "legendFormat": "种子 v4",
+          "expr": "sum(aquatic_torrents{job=\"aquatic-http\"})",
+          "legendFormat": "种子 TCP",
           "refId": "B"
         }
       ],
-      "title": "Peer 与种子趋势",
+      "title": "种子数趋势",
       "type": "timeseries"
     },
     {
@@ -1137,21 +1887,52 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 33
       },
-      "id": 6,
+      "id": 21,
       "options": {
         "legend": {
           "calcs": [
             "lastNotNull"
           ],
-          "displayMode": "table",
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1166,8 +1947,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-udp\"})",
-          "legendFormat": "Announce",
+          "expr": "sum(aquatic_peers{job=\"aquatic-udp\"})",
+          "legendFormat": "Peer UDP",
           "refId": "A"
         },
         {
@@ -1175,203 +1956,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"scrape\",job=\"aquatic-udp\"})",
-          "legendFormat": "Scrape",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"})",
-          "legendFormat": "已过滤",
-          "refId": "C"
-        }
-      ],
-      "title": "请求类型统计",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "mappings": [],
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 27
-      },
-      "id": 7,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "values": [
-            "value",
-            "percent"
-          ]
-        },
-        "pieType": "pie",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-udp\"})",
-          "legendFormat": "Announce",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_responses_total{type=\"scrape\",job=\"aquatic-udp\"})",
-          "legendFormat": "Scrape",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"})",
-          "legendFormat": "已过滤",
-          "refId": "C"
-        }
-      ],
-      "title": "响应类型分布",
-      "type": "piechart"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 16,
-        "x": 8,
-        "y": 27
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(aquatic_rx_bytes{job=\"aquatic-udp\"}[5m]))",
-          "legendFormat": "入站",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(aquatic_tx_bytes{job=\"aquatic-udp\"}[5m]))",
-          "legendFormat": "出站",
+          "expr": "sum(aquatic_peers{job=\"aquatic-http\"})",
+          "legendFormat": "Peer TCP",
           "refId": "B"
         }
       ],
-      "title": "入/出流量趋势",
+      "title": "Peer 趋势",
       "type": "timeseries"
     }
   ],
@@ -1382,7 +1972,8 @@
     "aquatic",
     "bittorrent",
     "tracker",
-    "udp"
+    "udp",
+    "tcp"
   ],
   "templating": {
     "list": []
@@ -1393,8 +1984,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Aquatic UDP Tracker 监控面板",
-  "uid": "aquatic-udp-dash",
+  "title": "Aquatic Tracker 监控面板（UDP + TCP）",
+  "uid": "aquatic-tracker",
   "version": 1,
   "weekStart": ""
 }
