@@ -72,6 +72,16 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
     let auto_ban_tracker = if config.auto_ban.enabled {
         let tracker = AutoBanTracker::from_config(&config.auto_ban);
 
+        let restored = tracker.load_client_bans();
+
+        if restored > 0 {
+            ::log::info!(
+                "auto-ban: restored {} client bans from {}",
+                restored,
+                config.auto_ban.client_ban_list_path.display(),
+            );
+        }
+
         Some(Arc::new(tracker))
     } else {
         None
@@ -130,6 +140,14 @@ pub fn run(mut config: Config) -> ::anyhow::Result<()> {
             .spawn(move || {
                 loop {
                     sleep(flush_interval);
+
+                    // Expired client bans are pruned at most once a day; the
+                    // file is independent of the ip_ban list.
+                    let pruned = tracker.maybe_cleanup_client_bans();
+
+                    if pruned > 0 {
+                        ::log::info!("auto-ban: pruned {} expired client bans", pruned);
+                    }
 
                     // Only flush to file if ip_ban mode is On
                     if ip_ban_config.mode.is_on() {

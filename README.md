@@ -286,7 +286,8 @@ peer_id_allowlist_path = ""
 
 | 档位 | 违规原因 | 处置 |
 |---|---|---|
-| 高危 | SQL 注入、路径遍历、客户端封禁（peer_id 命中列表） | **首次即封禁**，不等阈值 |
+| 高危 | SQL 注入、路径遍历 | **首次即封禁**，不等阈值 |
+| 客户端 | peer_id 命中封禁列表 / 内置吸血客户端列表 | **首次即封禁，固定临时时长，永不升级为永久** |
 | 可疑 | 爬虫/扫描器、缺少 User-Agent、私有 IP | 计数达到 `threshold` 后封禁 |
 | 启发式 | 非标准 peer_id、peer_id 与 User-Agent 不一致（仅 `enforce`） | 计数达到阈值后按阶梯升级 |
 
@@ -294,6 +295,28 @@ peer_id_allowlist_path = ""
 `escalation_enabled` 后按 `escalation_steps` 逐级加长，阶梯用完后转为永久封禁。
 每个 IP 的违规历史保留在内存中，`offense_decay_secs` 内没有新违规就清零，
 所以偶发一次不会被当成累犯。
+
+### 客户端封禁单独一天
+
+吸血客户端（迅雷、QQ旋风、BitComet 等）数量大，一台 NAT 出口后面往往有正常用户。
+把这类客户端当攻击者做永久封禁，会连同正常用户一起锁死，所以它们走单独一条路径：
+
+```toml
+[auto_ban]
+client_ban_duration_secs = 86400   # 固定 1 天
+client_ban_jitter_secs = 1800      # 到期时间 ±30 分钟抖动
+client_ban_list_path = "./client-ban-ips.txt"
+```
+
+| 行为 | 说明 |
+|---|---|
+| 时长固定 | 第 1 次、第 10 次命中都是 1 天，**不参与升级阶梯**，不会变成永久 |
+| 持久化 | 写入 `client-ban-ips.txt`（每行 `<ip> <expire_unix>`），重启后仍然生效 |
+| 抖动 | 到期时间按 IP 派生 ±30 分钟偏移，分散解封时刻，避免请求尖峰 |
+| 每日清理 | 后台线程每天重写一次文件，删除已过期条目（临时文件 + 原子替换） |
+| 关闭 | `client_ban_duration_secs = 0` 表示沿用 `immediate_ban_secs`，回到旧行为 |
+
+SQL 注入、路径遍历不受影响，仍按 `ban_duration_secs`（默认 `0` = 永久）处理，并立即写入 `ip-ban-list.txt`。
 
 ```toml
 [auto_ban]

@@ -68,6 +68,12 @@ threshold = 10
 window_secs = 60
 ban_duration_secs = 0
 immediate_ban_secs = 0
+# 吸血客户端封禁时长：固定 1 天，且永不升级为永久封禁
+client_ban_duration_secs = 86400
+# 到期时间抖动（±秒），避免同一批封禁同时解封造成请求尖峰
+client_ban_jitter_secs = 1800
+# 客户端封禁 IP 的持久化文件（带过期时间，重启后仍生效）
+client_ban_list_path = "./client-ban-ips.txt"
 ban_list_path = "./ip-ban-list.txt"
 flush_interval_secs = 60
 
@@ -130,6 +136,12 @@ threshold = 10
 window_secs = 60
 ban_duration_secs = 0
 immediate_ban_secs = 0
+# 吸血客户端封禁时长：固定 1 天，且永不升级为永久封禁
+client_ban_duration_secs = 86400
+# 到期时间抖动（±秒），避免同一批封禁同时解封造成请求尖峰
+client_ban_jitter_secs = 1800
+# 客户端封禁 IP 的持久化文件（带过期时间，重启后仍生效）
+client_ban_list_path = "./client-ban-ips.txt"
 ban_list_path = "./ip-ban-list.txt"
 flush_interval_secs = 60
 
@@ -186,6 +198,12 @@ threshold = 10
 window_secs = 60
 ban_duration_secs = 0
 immediate_ban_secs = 0
+# 吸血客户端封禁时长：固定 1 天，且永不升级为永久封禁
+client_ban_duration_secs = 86400
+# 到期时间抖动（±秒），避免同一批封禁同时解封造成请求尖峰
+client_ban_jitter_secs = 1800
+# 客户端封禁 IP 的持久化文件（带过期时间，重启后仍生效）
+client_ban_list_path = "./client-ban-ips.txt"
 ban_list_path = "./ip-ban-list.txt"
 flush_interval_secs = 60
 

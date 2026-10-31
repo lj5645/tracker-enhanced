@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aquatic_toml_config::TomlConfig;
 use hashbrown::HashMap;
@@ -67,6 +67,22 @@ pub struct AutoBanConfig {
     /// Seconds without a new offence after which an IP's offence history is
     /// forgotten, so it starts again at the first step of the ladder.
     pub offense_decay_secs: u64,
+    /// Ban duration for `client_banned` violations, in seconds. These bans are
+    /// always temporary and never escalate to a permanent ban, so a client
+    /// that is merely unwanted (Thunder, BitComet, ...) cannot get an address
+    /// locked out forever.
+    ///
+    /// `0` means "inherit `immediate_ban_secs`" and therefore keeps the
+    /// historical behaviour.
+    pub client_ban_duration_secs: u64,
+    /// Maximum random offset added to (or subtracted from) a client ban's
+    /// expiry, in seconds. Spreading expiries avoids a request spike when a
+    /// whole batch of bans written during one incident expires at the same
+    /// moment.
+    pub client_ban_jitter_secs: u64,
+    /// File holding client-ban IPs with their expiry timestamps, one
+    /// `<ip> <unix_seconds>` pair per line. Empty means memory-only.
+    pub client_ban_list_path: PathBuf,
 }
 
 impl Default for AutoBanConfig {
@@ -87,6 +103,13 @@ impl Default for AutoBanConfig {
             escalation_enabled: false,
             escalation_steps: String::from("300,3600,86400"),
             offense_decay_secs: 86_400,
+            // One day, matching the intent of "punish the client, not the
+            // address forever".
+            client_ban_duration_secs: 86_400,
+            // Half an hour of spread, so 24h bans issued in one burst do not
+            // all expire on the same second.
+            client_ban_jitter_secs: 1_800,
+            client_ban_list_path: PathBuf::from("./client-ban-ips.txt"),
         }
     }
 }
@@ -269,6 +292,73 @@ fn append_ip_line(path: &Path, ip: &IpAddr) -> ::std::io::Result<()> {
     file.write_all(line.as_bytes())
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|delta| delta.as_secs())
+        .unwrap_or(0)
+}
+
+/// Append `<ip> <expire_unix>` to the client ban file.
+///
+/// Callers must hold `AutoBanTracker::write_lock`.
+fn append_client_ban_line(path: &Path, ip: &IpAddr, expire_unix: u64) -> ::std::io::Result<()> {
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    let mut line = String::with_capacity(64);
+
+    if !file_ends_with_newline(path) {
+        line.push('\n');
+    }
+
+    // Manual formatting keeps the allocation count low; this runs on the
+    // request path whenever a banned client is seen.
+    line.push_str(&ip.to_string());
+    line.push(' ');
+    line.push_str(&expire_unix.to_string());
+    line.push('\n');
+
+    file.write_all(line.as_bytes())
+}
+
+/// Parse `<ip> <expire_unix>` lines into a map, keeping the latest expiry per
+/// address and dropping entries that have already expired.
+fn parse_client_ban_lines(content: &str, now_unix: u64) -> HashMap<IpAddr, u64> {
+    let mut out: HashMap<IpAddr, u64> = HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+
+        let ip = match parts.next().and_then(|s| s.parse::<IpAddr>().ok()) {
+            Some(ip) => ip,
+            None => continue,
+        };
+
+        let expire = match parts.next().and_then(|s| s.parse::<u64>().ok()) {
+            Some(expire) => expire,
+            None => continue,
+        };
+
+        if expire <= now_unix {
+            continue;
+        }
+
+        let slot = out.entry(ip).or_insert(expire);
+
+        if expire > *slot {
+            *slot = expire;
+        }
+    }
+
+    out
+}
+
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
 pub struct AutoBanTracker {
     inner: RwLock<AutoBanInner>,
@@ -276,6 +366,8 @@ pub struct AutoBanTracker {
     /// is mutably borrowed.
     policy: AutoBanPolicy,
     ban_list_path: Option<PathBuf>,
+    /// File holding client-ban IPs together with their expiry timestamps.
+    client_ban_list_path: Option<PathBuf>,
     /// Serializes appends to the ban list. Multiple socket workers can ban
     /// different IPs at the same time and `write_all` is not atomic.
     write_lock: Mutex<()>,
@@ -292,6 +384,8 @@ struct AutoBanInner {
     last_capacity_cleanup: Option<Instant>,
     /// Last time the "record limit reached" warning was logged.
     last_overflow_log: Option<Instant>,
+    /// Last time expired client bans were pruned from the client ban file.
+    last_client_cleanup: Option<Instant>,
 }
 
 /// Immutable escalation policy. Kept outside the record lock so it can be read
@@ -300,15 +394,90 @@ struct AutoBanPolicy {
     /// Duration of the first high-severity ban; `0` means "inherit
     /// `ban_duration_secs`".
     immediate_ban_secs: u64,
+    /// Fixed duration for `client_banned`; never escalates to permanent.
+    client_ban_duration_secs: u64,
+    /// Half-width of the expiry jitter applied to client bans.
+    client_ban_jitter_secs: u64,
     escalation_enabled: bool,
     /// Escalation ladder for heuristic violations, already parsed.
     escalation_steps: Vec<u64>,
     offense_decay_secs: u64,
 }
 
+/// Deterministic per-address offset in `[-jitter, +jitter]`, in seconds.
+///
+/// Derived from the address itself rather than from a random source: the same
+/// IP always lands in the same slot, so a restart does not reshuffle expiry
+/// times, while different addresses still spread out.
+fn client_jitter(ip: &IpAddr, jitter: u64) -> i64 {
+    if jitter == 0 {
+        return 0;
+    }
+
+    let hash = match ip {
+        IpAddr::V4(v4) => u32::from_be_bytes(v4.octets()) as u64,
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            let mut acc = 0u64;
+            for chunk in octets.chunks(8) {
+                let mut buf = [0u8; 8];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                acc = acc.rotate_left(7) ^ u64::from_be_bytes(buf);
+            }
+            acc
+        }
+    };
+
+    let span = jitter.saturating_mul(2).saturating_add(1);
+    let offset = hash % span;
+
+    offset as i64 - jitter as i64
+}
+
 impl AutoBanPolicy {
-    fn ban_kind(&self, tier: AutoBanTier, offenses: u32, fallback_secs: u64) -> BanKind {
-        match tier {
+    /// Duration in seconds for a `client_banned` violation, already jittered.
+    ///
+    /// Returns `0` only when the whole chain resolves to "permanent", which
+    /// callers treat as the historical meaning.
+    fn client_ban_secs(&self, ip: &IpAddr, fallback_secs: u64) -> u64 {
+        let base = if self.client_ban_duration_secs != 0 {
+            self.client_ban_duration_secs
+        } else if self.immediate_ban_secs != 0 {
+            self.immediate_ban_secs
+        } else {
+            fallback_secs
+        };
+
+        if base == 0 {
+            return 0;
+        }
+
+        let delta = client_jitter(ip, self.client_ban_jitter_secs);
+
+        let secs = if delta >= 0 {
+            base.saturating_add(delta as u64)
+        } else {
+            base.saturating_sub(delta.unsigned_abs())
+        };
+
+        secs.max(1)
+    }
+
+    fn ban_kind(
+        &self,
+        reason: AutoBanReason,
+        ip: &IpAddr,
+        offenses: u32,
+        fallback_secs: u64,
+    ) -> BanKind {
+        // Client bans are a service decision, not an attack signal: give them
+        // one fixed, temporary duration and keep them out of the escalation
+        // ladder entirely, otherwise a repeat offender ends up permanent.
+        if reason == AutoBanReason::ClientBanned {
+            return BanKind::from_secs(self.client_ban_secs(ip, fallback_secs));
+        }
+
+        match reason.tier() {
             AutoBanTier::Immediate => {
                 // Second high-severity offence by the same IP is deliberate.
                 if self.escalation_enabled && offenses >= 2 {
@@ -415,6 +584,12 @@ impl AutoBanTracker {
         ban_list_path: Option<PathBuf>,
         config: &AutoBanConfig,
     ) -> Self {
+        let client_ban_list_path = if config.client_ban_list_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(config.client_ban_list_path.clone())
+        };
+
         Self {
             inner: RwLock::new(AutoBanInner {
                 records: HashMap::new(),
@@ -424,13 +599,17 @@ impl AutoBanTracker {
                 max_records: 100_000,
                 last_capacity_cleanup: None,
                 last_overflow_log: None,
+                last_client_cleanup: None,
             }),
             policy: AutoBanPolicy {
                 immediate_ban_secs: config.immediate_ban_secs,
+                client_ban_duration_secs: config.client_ban_duration_secs,
+                client_ban_jitter_secs: config.client_ban_jitter_secs,
                 escalation_enabled: config.escalation_enabled,
                 escalation_steps: parse_steps(&config.escalation_steps),
                 offense_decay_secs: config.offense_decay_secs,
             },
+            client_ban_list_path,
             ban_list_path,
             write_lock: Mutex::new(()),
         }
@@ -530,7 +709,7 @@ impl AutoBanTracker {
                     if triggered && !record.is_banned(now) {
                         let offenses =
                             register_offense(record, now, policy.offense_decay_secs);
-                        let kind = policy.ban_kind(tier, offenses, ban_duration_secs);
+                        let kind = policy.ban_kind(reason, ip, offenses, ban_duration_secs);
 
                         apply_ban(record, kind, now);
 
@@ -555,7 +734,7 @@ impl AutoBanTracker {
                     if triggered {
                         let offenses =
                             register_offense(&mut record, now, policy.offense_decay_secs);
-                        let kind = policy.ban_kind(tier, offenses, ban_duration_secs);
+                        let kind = policy.ban_kind(reason, ip, offenses, ban_duration_secs);
 
                         apply_ban(&mut record, kind, now);
                     }
@@ -590,8 +769,14 @@ impl AutoBanTracker {
             (should_ban, is_permanent)
         };
 
-        if should_ban && is_permanent {
-            self.persist_ip(ip);
+        if should_ban {
+            if is_permanent {
+                self.persist_ip(ip);
+            } else if reason == AutoBanReason::ClientBanned {
+                // Temporary client bans are the only temporary bans that are
+                // written to disk, so they survive a restart with their expiry.
+                self.persist_client_ban(ip);
+            }
         }
 
         should_ban
@@ -654,6 +839,187 @@ impl AutoBanTracker {
         }
 
         false
+    }
+
+    /// Append a temporary client ban together with its expiry timestamp.
+    ///
+    /// Client bans are the one temporary ban type that survives a restart, so
+    /// they get their own file with an explicit expiry on every line.
+    fn persist_client_ban(&self, ip: &IpAddr) {
+        let path = match &self.client_ban_list_path {
+            Some(path) if !path.as_os_str().is_empty() => path,
+            _ => return,
+        };
+
+        let expire_unix = {
+            let inner = self.inner.read().unwrap();
+
+            match inner.records.get(ip) {
+                Some(record) if !record.permanent => match record.banned_until {
+                    Some(until) => {
+                        let remaining = until.saturating_duration_since(Instant::now());
+                        unix_now().saturating_add(remaining.as_secs())
+                    }
+                    None => return,
+                },
+                _ => return,
+            }
+        };
+
+        let _write_guard = self.write_lock.lock().unwrap();
+
+        if let Err(err) = append_client_ban_line(path, ip, expire_unix) {
+            ::log::error!(
+                "auto-ban: failed to append {} to {}: {}",
+                ip,
+                path.display(),
+                err,
+            );
+        }
+    }
+
+    /// Restore non-expired client bans from the client ban file.
+    ///
+    /// Returns the number of addresses restored. Called once at startup so a
+    /// restart does not hand banned clients a clean slate.
+    pub fn load_client_bans(&self) -> usize {
+        let path = match &self.client_ban_list_path {
+            Some(path) if !path.as_os_str().is_empty() => path,
+            _ => return 0,
+        };
+
+        let content = match ::std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == ::std::io::ErrorKind::NotFound => return 0,
+            Err(err) => {
+                ::log::error!("auto-ban: failed to read {}: {}", path.display(), err);
+                return 0;
+            }
+        };
+
+        let now_unix = unix_now();
+        let parsed = parse_client_ban_lines(&content, now_unix);
+        let count = parsed.len();
+
+        if count == 0 {
+            return 0;
+        }
+
+        let now = Instant::now();
+        let mut inner = self.inner.write().unwrap();
+
+        for (ip, expire_unix) in parsed {
+            let remaining = Duration::from_secs(expire_unix.saturating_sub(now_unix));
+
+            let until = match now.checked_add(remaining) {
+                Some(until) => until,
+                None => continue,
+            };
+
+            let record = inner.records.entry(ip).or_insert_with(|| IpRecord {
+                count: 1,
+                first_violation: now,
+                banned_until: None,
+                permanent: false,
+                persisted: false,
+                offenses: 0,
+                last_offense: None,
+            });
+
+            // Keep whichever expiry is later when the address is already
+            // banned in memory.
+            let longer = match record.banned_until {
+                Some(existing) => until > existing,
+                None => true,
+            };
+
+            if !record.permanent && longer {
+                record.banned_until = Some(until);
+                record.persisted = false;
+            }
+        }
+
+        count
+    }
+
+    /// Rewrite the client ban file without entries that have expired.
+    ///
+    /// Written to a temporary file and renamed into place so a crash cannot
+    /// truncate the list.
+    pub fn cleanup_client_bans(&self) -> usize {
+        let path = match &self.client_ban_list_path {
+            Some(path) if !path.as_os_str().is_empty() => path,
+            _ => return 0,
+        };
+
+        let content = match ::std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return 0,
+        };
+
+        let now_unix = unix_now();
+        let mut kept: Vec<(IpAddr, u64)> = parse_client_ban_lines(&content, now_unix)
+            .into_iter()
+            .collect();
+        kept.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut out = String::with_capacity(kept.len() * 40 + 64);
+        out.push_str("# auto_ban client bans, format: <ip> <expire_unix>\n");
+
+        for (ip, expire) in &kept {
+            out.push_str(&ip.to_string());
+            out.push(' ');
+            out.push_str(&expire.to_string());
+            out.push('\n');
+        }
+
+        let tmp = path.with_extension("tmp");
+
+        if let Err(err) = ::std::fs::write(&tmp, out.as_bytes()) {
+            ::log::error!("auto-ban: failed to write {}: {}", tmp.display(), err);
+            return 0;
+        }
+
+        if let Err(err) = ::std::fs::rename(&tmp, path) {
+            ::log::error!("auto-ban: failed to replace {}: {}", path.display(), err);
+            let _ = ::std::fs::remove_file(&tmp);
+            return 0;
+        }
+
+        let before = content
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with('#')
+            })
+            .count();
+
+        before.saturating_sub(kept.len())
+    }
+
+    /// Run the daily cleanup if it is due. Returns the number of pruned lines.
+    ///
+    /// Called from the periodic flush thread; the interval is a full day so a
+    /// large client ban file does not get rewritten every minute.
+    pub fn maybe_cleanup_client_bans(&self) -> usize {
+        let due = {
+            let inner = self.inner.read().unwrap();
+
+            inner
+                .last_client_cleanup
+                .map_or(true, |last| last.elapsed().as_secs() >= 86_400)
+        };
+
+        if !due {
+            return 0;
+        }
+
+        {
+            let mut inner = self.inner.write().unwrap();
+            inner.last_client_cleanup = Some(Instant::now());
+        }
+
+        self.cleanup_client_bans()
     }
 
     /// Flush permanently banned IPs that failed to persist immediately.
@@ -870,6 +1236,22 @@ pub fn validate_auto_ban_config(
              larger values overflow Instant arithmetic",
             MAX_BAN_DURATION_SECS,
             auto.immediate_ban_secs,
+        ));
+    }
+
+    if auto.client_ban_duration_secs > MAX_BAN_DURATION_SECS {
+        return Err(anyhow::anyhow!(
+            "auto_ban.client_ban_duration_secs must be at most {} seconds (10 years), got {}",
+            MAX_BAN_DURATION_SECS,
+            auto.client_ban_duration_secs,
+        ));
+    }
+
+    if auto.client_ban_jitter_secs > MAX_BAN_DURATION_SECS {
+        return Err(anyhow::anyhow!(
+            "auto_ban.client_ban_jitter_secs must be at most {} seconds (10 years), got {}",
+            MAX_BAN_DURATION_SECS,
+            auto.client_ban_jitter_secs,
         ));
     }
 
@@ -1492,5 +1874,133 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_auto_ban_config(&zero_decay, &ip_ban).is_err());
+    }
+
+    fn client_ban_test_config() -> AutoBanConfig {
+        let mut config = AutoBanConfig::default();
+
+        config.enabled = true;
+        config.threshold = 20;
+        // High-severity reasons stay permanent ...
+        config.ban_duration_secs = 0;
+        config.immediate_ban_secs = 0;
+        // ... while client bans get one day and never escalate.
+        config.client_ban_duration_secs = 86_400;
+        config.client_ban_jitter_secs = 0;
+        config.escalation_enabled = true;
+        config.ban_list_path = PathBuf::new();
+        config.client_ban_list_path = PathBuf::new();
+
+        config
+    }
+
+    #[test]
+    fn test_client_ban_kind_never_becomes_permanent() {
+        let mut config = client_ban_test_config();
+        config.escalation_enabled = true;
+        // A permanent `ban_duration_secs` would make other Immediate reasons
+        // permanent; client bans must ignore that.
+        config.ban_duration_secs = 0;
+
+        let tracker = AutoBanTracker::from_config(&config);
+        let ip: IpAddr = Ipv4Addr::new(203, 0, 113, 9).into();
+
+        for offenses in 0..10u32 {
+            match tracker
+                .policy
+                .ban_kind(AutoBanReason::ClientBanned, &ip, offenses, 0)
+            {
+                BanKind::Temporary(secs) => assert_eq!(
+                    secs, 86_400,
+                    "jitter is disabled so every client ban is exactly one day",
+                ),
+                BanKind::Permanent => panic!(
+                    "client ban escalated to permanent on offence {}",
+                    offenses
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn test_client_ban_stays_temporary_with_escalation_enabled() {
+        let mut config = client_ban_test_config();
+        config.ban_list_path = PathBuf::from("./aquatic-test-client-ban-ip-list.txt");
+
+        let tracker = AutoBanTracker::from_config(&config);
+        let ip: IpAddr = Ipv4Addr::new(203, 0, 113, 9).into();
+
+        assert!(tracker.record_violation(&ip, AutoBanReason::ClientBanned));
+        assert!(tracker.is_auto_banned(&ip));
+
+        // A temporary ban is never flushed to the permanent ip list.
+        assert!(tracker.flush_to_file().is_empty());
+    }
+
+    #[test]
+    fn test_client_jitter_is_bounded_and_stable() {
+        let jitter = 1_800u64;
+        let a: IpAddr = Ipv4Addr::new(1, 2, 3, 4).into();
+        let b: IpAddr = Ipv4Addr::new(5, 6, 7, 8).into();
+
+        let ja = client_jitter(&a, jitter);
+        let jb = client_jitter(&b, jitter);
+
+        assert!(ja.abs() <= jitter as i64);
+        assert!(jb.abs() <= jitter as i64);
+        // Same address always maps to the same offset, so restarts do not
+        // reshuffle expiry times.
+        assert_eq!(ja, client_jitter(&a, jitter));
+        assert_eq!(client_jitter(&a, 0), 0);
+    }
+
+    #[test]
+    fn test_client_ban_file_roundtrip_and_cleanup() {
+        let path = PathBuf::from("./aquatic-test-client-bans.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut config = client_ban_test_config();
+        config.client_ban_list_path = path.clone();
+
+        let now = unix_now();
+        let expired = now.saturating_sub(60);
+        let valid = now.saturating_add(3_600);
+
+        let content = format!(
+            "# comment\n192.0.2.1 {}\n192.0.2.2 {}\nnot-an-ip {}\n192.0.2.3 not-a-number\n",
+            expired, valid, valid,
+        );
+        std::fs::write(&path, content).unwrap();
+
+        let tracker = AutoBanTracker::from_config(&config);
+        assert_eq!(tracker.load_client_bans(), 1);
+        assert!(tracker.is_auto_banned(&"192.0.2.2".parse().unwrap()));
+        assert!(!tracker.is_auto_banned(&"192.0.2.1".parse().unwrap()));
+
+        // The rewrite keeps only the unexpired entry.
+        assert_eq!(tracker.cleanup_client_bans(), 1);
+
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(rewritten.contains("192.0.2.2"));
+        assert!(!rewritten.contains("192.0.2.1"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_expired_client_ban_is_not_restored() {
+        let path = PathBuf::from("./aquatic-test-client-bans-expired.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut config = client_ban_test_config();
+        config.client_ban_list_path = path.clone();
+
+        std::fs::write(&path, format!("198.51.100.7 {}\n", unix_now().saturating_sub(1))).unwrap();
+
+        let tracker = AutoBanTracker::from_config(&config);
+        assert_eq!(tracker.load_client_bans(), 0);
+        assert!(!tracker.is_auto_banned(&"198.51.100.7".parse().unwrap()));
+
+        let _ = std::fs::remove_file(&path);
     }
 }
