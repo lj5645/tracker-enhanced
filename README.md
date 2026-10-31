@@ -405,9 +405,26 @@ kill -SIGUSR2 $(pgrep -f "aquatic.*http")
 [metrics]
 run_prometheus_endpoint = true
 # 指标端点没有认证，默认只监听本机；远程抓取请通过防火墙或反向代理限制来源
-prometheus_endpoint_address = "127.0.0.1:9000"
+prometheus_endpoint_address = "127.0.0.1:9002"   # HTTP；UDP 用 9001，WS 用 9003
 torrent_count_update_interval = 300
 ```
+
+`aquatic -p` 生成的模板里三个协议的指标端口已错开：UDP 9001、HTTP 9002、WS 9003。
+
+### 部署监控栈
+
+`monitoring/` 目录提供 Prometheus + Grafana + node-exporter：
+
+```bash
+cd monitoring
+GRAFANA_ADMIN_PASSWORD='strong-password' docker compose up -d
+```
+
+**Prometheus 必须以 `network_mode: host` 运行。** 指标端点只绑 `127.0.0.1`，bridge 容器访问不到宿主机的 loopback；`host.docker.internal` 也不行，它指向 docker0 网关，同样到不了 `127.0.0.1`。所以 `docker-compose.yml` 里 Prometheus 用 host 网络，Grafana 反过来通过 `host.docker.internal:9090` 访问它。
+
+`prometheus.yml` 默认抓 UDP 9001 和 HTTP 9002。只跑一个协议时删掉另一个 job，否则那个 target 会一直显示 down。
+
+Grafana 面板用的是不带过滤的 `sum(aquatic_*)`，同时跑两个协议时 UDP 与 HTTP 会相加，同一批种子的 torrent / peer 数被算两遍。需要单实例视图时给查询加上 `job="aquatic-http"`。
 
 ## 编译
 

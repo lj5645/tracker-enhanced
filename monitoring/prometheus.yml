@@ -3,18 +3,38 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  # The tracker runs on the host; host.docker.internal is provided by the
-  # extra_hosts mapping in docker-compose.yml.
+  # aquatic binds its metric endpoints to 127.0.0.1 (see the
+  # [statistics]/[metrics] prometheus_endpoint_address). A bridged container
+  # cannot reach the host's loopback address, so this container runs with
+  # network_mode: host and scrapes through localhost.
+  #
+  # Default ports from `aquatic -p`: udp 9001, http 9002, ws 9003.
+  # Remove the job of any protocol you do not run, otherwise it stays "down".
+  - job_name: 'aquatic-udp'
+    static_configs:
+      - targets: ['localhost:9001']
+        labels:
+          instance: 'aquatic-udp'
+    metrics_path: /metrics
+
   - job_name: 'aquatic-http'
     static_configs:
-      - targets: ['host.docker.internal:9000']
+      - targets: ['localhost:9002']
         labels:
           instance: 'aquatic-http'
     metrics_path: /metrics
 
+  # Uncomment when running the WebSocket tracker.
+  # - job_name: 'aquatic-ws'
+  #   static_configs:
+  #     - targets: ['localhost:9003']
+  #       labels:
+  #         instance: 'aquatic-ws'
+  #   metrics_path: /metrics
+
   - job_name: 'node-exporter'
     static_configs:
-      - targets: ['host.docker.internal:9100']
+      - targets: ['localhost:9100']
         labels:
           instance: 'tracker-server'
 

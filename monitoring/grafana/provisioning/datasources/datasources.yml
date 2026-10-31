@@ -4,7 +4,10 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: http://prometheus:9090
+    # Prometheus runs with network_mode: host, so it is no longer resolvable as
+    # a compose service name. extra_hosts in docker-compose.yml maps
+    # host.docker.internal to the host gateway.
+    url: http://host.docker.internal:9090
     uid: prometheus
     isDefault: true
     editable: true
