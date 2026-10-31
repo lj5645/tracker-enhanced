@@ -24,6 +24,8 @@
 - 抖动有界，且对同一 IP 稳定（重启不改变到期时间）
 - 客户端封禁文件往返：过期条目丢弃、非法行跳过、清理只保留未过期条目
 - 启动加载忽略已过期条目
+- Runtime Smoke 的 `udp_autoban` / `http_autoban` / `ws_autoban`：断言封禁落在
+  `client-ban-ips.txt` 且为临时（约一天，含抖动），不再校验 `ip-ban-list.txt`
 
 ## v1.5.8
 
