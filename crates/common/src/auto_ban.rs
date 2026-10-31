@@ -955,6 +955,24 @@ impl AutoBanTracker {
             }
         }
 
+        // Restored bans occupy record slots permanently (until they expire).
+        // If they fill the map, the capacity guard in record_violation would
+        // refuse to track any new violation and silently disable auto-ban
+        // for every fresh offender, so grow the limit to keep headroom.
+        let needed = inner
+            .max_records
+            .max(count)
+            .saturating_add(100_000);
+        if inner.max_records < needed {
+            ::log::info!(
+                "auto-ban: raised record limit {} -> {} to hold {} restored bans plus headroom",
+                inner.max_records,
+                needed,
+                count,
+            );
+            inner.max_records = needed;
+        }
+
         count
     }
 
