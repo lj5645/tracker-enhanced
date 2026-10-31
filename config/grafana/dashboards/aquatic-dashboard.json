@@ -2025,7 +2025,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 10,
         "x": 0,
         "y": 41
       },
@@ -2080,8 +2080,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 10,
+        "x": 10,
         "y": 41
       },
       "id": 302,
@@ -2129,24 +2129,25 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 0,
-        "y": 49
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 41
       },
       "id": 303,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        }
+        },
+        "orientation": "vertical"
       },
       "targets": [
         {
@@ -2156,50 +2157,10 @@
           },
           "editorMode": "code",
           "expr": "sum(aquatic_auto_bans_total)",
-          "legendFormat": "总数",
+          "legendFormat": "累计封禁",
           "range": true,
           "refId": "A"
-        }
-      ],
-      "title": "累计封禁总数",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {},
-          "unit": "short"
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 8,
-        "y": 49
-      },
-      "id": 304,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "textMode": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "targets": [
         {
           "datasource": {
             "type": "prometheus",
@@ -2207,50 +2168,10 @@
           },
           "editorMode": "code",
           "expr": "max(aquatic_auto_ban_active{kind=\"temporary\"})",
-          "legendFormat": "临时",
+          "legendFormat": "临时封禁",
           "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "当前临时封禁",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {},
-          "unit": "short"
+          "refId": "B"
         },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 16,
-        "y": 49
-      },
-      "id": 305,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "textMode": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "targets": [
         {
           "datasource": {
             "type": "prometheus",
@@ -2258,12 +2179,12 @@
           },
           "editorMode": "code",
           "expr": "max(aquatic_auto_ban_active{kind=\"permanent\"})",
-          "legendFormat": "永久",
+          "legendFormat": "永久封禁",
           "range": true,
-          "refId": "A"
+          "refId": "C"
         }
       ],
-      "title": "当前永久封禁",
+      "title": "封禁计数",
       "type": "stat"
     }
   ],
