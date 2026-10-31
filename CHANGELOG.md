@@ -1,5 +1,24 @@
 # 更新日志
 
+## v1.5.8
+
+### 修复
+
+- **Windows 上 `[privileges]` 段会让服务启动失败**：`PrivilegeConfig` 的字段都带
+  `#[cfg(unix)]`，在 Windows 上退化成零字段结构，配合 `deny_unknown_fields`，任何
+  `[privileges]` 表都会报 `unknown field`。这与合并配置文件"一份文件跨平台共用"的
+  目的直接冲突
+- 现在字段在三个平台都存在，改为**值校验**：Windows 上 `drop_privileges = true` 时
+  启动报错 `privileges are not supported on this platform`；`false`（默认值）完全正常。
+  既保留"不会让人误以为降权已生效"的保护，也不再阻碍配置文件共用
+- `PrivilegeDropper` 在非 Unix 平台同样保留配置，不再在构造时丢弃
+
+### 测试
+
+- 新增 `PrivilegeConfig` 的 TOML 往返测试（三个平台都跑）
+- 新增"完整 privileges 段可被解析"的测试：跨平台共用文件时该段不再报未知字段
+- 新增非 Unix 平台下 `drop_privileges = true` 必须报错的测试（Windows CI 上执行）
+
 ## v1.5.7
 
 ### 自动封禁分级
