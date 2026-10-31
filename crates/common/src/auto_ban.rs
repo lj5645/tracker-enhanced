@@ -1977,8 +1977,13 @@ mod tests {
         assert!(tracker.is_auto_banned(&"192.0.2.2".parse().unwrap()));
         assert!(!tracker.is_auto_banned(&"192.0.2.1".parse().unwrap()));
 
-        // The rewrite keeps only the unexpired entry.
-        assert_eq!(tracker.cleanup_client_bans(), 1);
+        // The rewrite keeps only the unexpired entry: the expired line, the
+        // non-IP line and the non-numeric line are all dropped.
+        assert_eq!(
+            tracker.cleanup_client_bans(),
+            3,
+            "expired, non-IP and non-numeric lines are all pruned",
+        );
 
         let rewritten = std::fs::read_to_string(&path).unwrap();
         assert!(rewritten.contains("192.0.2.2"));
