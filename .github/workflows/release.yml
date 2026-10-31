@@ -170,16 +170,18 @@ jobs:
           ```bash
           # Linux
           chmod +x aquatic-linux-x86_64
-          ./aquatic-linux-x86_64 udp -c aquatic-udp-config.toml
-          ./aquatic-linux-x86_64 http -c aquatic-http-config.toml
-          ./aquatic-linux-x86_64 ws -c aquatic-ws-config.toml
+          ./aquatic-linux-x86_64 udp  -c config.toml
+          ./aquatic-linux-x86_64 http -c config.toml
+          ./aquatic-linux-x86_64 ws   -c config.toml
 
           # Windows（仅 UDP）
-          .\aquatic-windows-x86_64.exe udp -c aquatic-udp-config.toml
+          .\aquatic-windows-x86_64.exe udp -c config.toml
           ```
 
           运行 `./aquatic-linux-x86_64 --help` 可查看当前二进制实际包含的协议。
-          示例配置（TOML）与封禁列表示例请从仓库根目录获取，Release 仅提供编译产物。
+          一份 `config.toml` 里同时包含 `[udp]` / `[http]` / `[ws]` 三段，启动哪个协议由
+          命令行决定；完整默认模板可用 `./aquatic -p` 生成。
+          示例配置与封禁列表示例请从仓库根目录获取，Release 仅提供编译产物。
 
           ### 运行时依赖
           - HTTP Tracker 需要 Linux 5.8+（依赖 glommio/io_uring）

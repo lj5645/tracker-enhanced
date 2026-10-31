@@ -48,13 +48,17 @@ sudo apt-get install -y libhwloc15
 
 ### 3. 配置
 
-Release 只提供编译产物，不附带配置文件。示例配置在仓库根目录：
+Release 只提供编译产物，不附带配置文件。仓库根目录的 `config.toml` 是可直接使用的示例，
+三个协议的配置都在同一个文件里：
 
 ```bash
-# 根据所用协议复制并修改示例配置
-cp aquatic-http-config.toml aquatic-udp-config.toml aquatic-ws-config.toml /etc/aquatic/
-vim /etc/aquatic/aquatic-http-config.toml
+sudo mkdir -p /etc/aquatic
+sudo cp config.toml ip-ban-list.txt client-ban-list.txt /etc/aquatic/
+sudo vim /etc/aquatic/config.toml
 ```
+
+启动哪个协议由命令行决定，配置里不需要开关。要某个协议的全部默认字段，用
+`./aquatic udp -p` 生成单协议配置，或 `./aquatic -p` 生成三段合并模板。
 
 ### 4. 运行
 
@@ -63,12 +67,12 @@ UDP、HTTP、WebSocket 编译在同一个二进制中，第一个参数选择协
 ```bash
 # Linux
 chmod +x aquatic-linux-x86_64
-./aquatic-linux-x86_64 udp  -c aquatic-udp-config.toml
-./aquatic-linux-x86_64 http -c aquatic-http-config.toml   # 仅当构建时包含 HTTP
-./aquatic-linux-x86_64 ws   -c aquatic-ws-config.toml     # 仅当构建时包含 WebSocket
+./aquatic-linux-x86_64 udp  -c config.toml
+./aquatic-linux-x86_64 http -c config.toml   # 仅当构建时包含 HTTP
+./aquatic-linux-x86_64 ws   -c config.toml   # 仅当构建时包含 WebSocket
 
 # Windows（仅 UDP）
-.\aquatic-windows-x86_64.exe udp -c aquatic-udp-config.toml
+.\aquatic-windows-x86_64.exe udp -c config.toml
 ```
 
 运行 `./aquatic-linux-x86_64 --help` 可查看当前二进制实际包含的协议。
