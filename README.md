@@ -431,22 +431,25 @@ GRAFANA_ADMIN_PASSWORD='strong-password' docker compose up -d
 | 区块 | 内容 |
 |---|---|
 | Tracker 统计 | 种子数、Peer 数（v4 / v6 / 合计）—— 每个面板两条序列，UDP 与 TCP 并排 |
-| 请求与流量 | 请求数、错误率、Announce、已过滤请求、请求类型、出入流量（**仅 UDP**） |
+| 请求统计 | 请求数、错误率、Announce、已过滤请求——同样两条序列；活跃连接仅 TCP |
+| 明细图表 | 请求类型分布、出入流量（**仅 UDP**） |
 | 系统资源 | CPU / 内存 / 网卡，来自 node-exporter |
 | 趋势对比 | 种子数、Peer 数的两条曲线 |
 
 颜色约定通过 `byName` override 固定，不受查询顺序影响：**UDP = 蓝 `#5794F2`，TCP = 橙 `#FF9830`**。
 
-**两个协议导出的指标不一样**，这是上游实现的差异，不是配置问题：
+**两个协议的指标集基本一致，差异只有两处**：
 
 | 指标 | UDP | HTTP（TCP） |
 |---|---|---|
 | `aquatic_torrents` / `aquatic_peers` | ✅ | ✅ |
-| `aquatic_requests_total` / `aquatic_responses_total` | ✅ | ❌ |
+| `aquatic_requests_total` / `aquatic_responses_total` | ✅ | ✅ |
+| `aquatic_active_connections` | ❌ 无连接概念 | ✅ |
 | `aquatic_rx_bytes` / `aquatic_tx_bytes` | ✅ | ❌ |
-| `aquatic_active_connections` | ❌ | ❌ |
 
-所以「请求与流量」整块只有 UDP 一条线，没有 TCP 对比——面板里放了文本说明标注这一点，避免误以为是面板坏了。`aquatic_active_connections` 任何构建都不导出，已从面板中移除。
+注意 **HTTP 的计数器是懒注册的**：在第一次真正记录之前，`aquatic_requests_total`、`aquatic_responses_total`、`aquatic_active_connections` 根本不会出现在 `/metrics` 里。所以一个刚启动、还没有任何 announce 的 HTTP tracker，端点只输出 `aquatic_torrents` 和 `aquatic_peers` 两个 gauge——这不是指标缺失，发一个请求就会补齐。
+
+另外 `aquatic_torrents` 的更新周期由 `torrent_count_update_interval` 控制（默认 300 秒），不是实时值；Peer 数则是实时的。
 
 ## 编译
 

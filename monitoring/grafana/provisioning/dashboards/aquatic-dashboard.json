@@ -638,7 +638,7 @@
       },
       "id": 400,
       "panels": [],
-      "title": "请求与流量（仅 UDP tracker 提供）",
+      "title": "请求统计（相同指标：UDP vs TCP）",
       "type": "row"
     },
     {
@@ -664,7 +664,38 @@
           "unit": "none",
           "decimals": 2
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -685,7 +716,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "targets": [
         {
@@ -694,7 +725,17 @@
             "uid": "prometheus"
           },
           "expr": "sum(aquatic_requests_total{job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_requests_total{job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
         }
       ],
       "title": "请求总数 (万)",
@@ -733,7 +774,38 @@
           },
           "unit": "percent"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -761,11 +833,21 @@
             "uid": "prometheus"
           },
           "expr": "sum(rate(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"}[5m])) / sum(rate(aquatic_responses_total{job=\"aquatic-udp\"}[5m])) * 100",
+          "legendFormat": "UDP",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(aquatic_responses_total{type=\"error\",job=\"aquatic-http\"}[5m])) / sum(rate(aquatic_responses_total{job=\"aquatic-http\"}[5m])) * 100",
+          "legendFormat": "TCP",
+          "refId": "B"
         }
       ],
       "title": "错误率",
-      "description": "仅 UDP",
+      "description": "被拒绝请求占比",
       "type": "gauge"
     },
     {
@@ -791,7 +873,38 @@
           "unit": "none",
           "decimals": 2
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 5,
@@ -812,7 +925,7 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "targets": [
         {
@@ -821,11 +934,122 @@
             "uid": "prometheus"
           },
           "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
         }
       ],
       "title": "Announce 总数 (万)",
-      "description": "成功的 announce 响应数",
+      "description": "",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UDP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TCP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 7
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"}) / 10000",
+          "legendFormat": "UDP",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-http\"}) / 10000",
+          "legendFormat": "TCP",
+          "refId": "B"
+        }
+      ],
+      "title": "已过滤请求 (万)",
+      "description": "",
       "type": "stat"
     },
     {
@@ -856,10 +1080,10 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 12,
+        "x": 16,
         "y": 7
       },
-      "id": 10,
+      "id": 14,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -880,12 +1104,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"}) / 10000",
+          "expr": "aquatic_active_connections{job=\"aquatic-http\"}",
           "refId": "A"
         }
       ],
-      "title": "已过滤请求 (万)",
-      "description": "被拒绝或过滤的请求数",
+      "title": "活跃连接 (仅 TCP)",
+      "description": "UDP 无连接概念，只有 HTTP tracker 上报",
       "type": "stat"
     },
     {
@@ -894,13 +1118,13 @@
       "title": "",
       "gridPos": {
         "h": 5,
-        "w": 8,
-        "x": 16,
+        "w": 4,
+        "x": 20,
         "y": 7
       },
       "options": {
         "mode": "markdown",
-        "content": "**这一行只有 UDP 数据**\n\nHTTP（TCP）tracker 只导出 `aquatic_torrents` 和 `aquatic_peers` 两个 gauge，请求数、响应数、收发字节这些计数器仅 UDP 实现。\n\n所以请求量 / 错误率 / 流量类图表没有 TCP 对比线，不是漏配。"
+        "content": "**指标差异**\n\n- 收发字节：仅 UDP\n- 活跃连接：仅 TCP\n- 其余两协议都有\n\nHTTP 的计数器首次使用前\n不会出现在端点里。"
       }
     },
     {
@@ -1007,7 +1231,7 @@
           "refId": "C"
         }
       ],
-      "title": "请求类型统计（UDP）",
+      "title": "请求类型统计（仅 UDP）",
       "type": "timeseries"
     },
     {
@@ -1105,7 +1329,7 @@
           "refId": "B"
         }
       ],
-      "title": "入/出流量趋势（UDP）",
+      "title": "入/出流量趋势（仅 UDP）",
       "type": "timeseries"
     },
     {
