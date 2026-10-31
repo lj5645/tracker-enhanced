@@ -906,7 +906,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "aquatic_active_connections{job=\"aquatic-http\"}",
+          "expr": "sum(aquatic_active_connections{job=\"aquatic-http\"})",
           "refId": "A"
         }
       ],
