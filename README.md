@@ -424,7 +424,27 @@ GRAFANA_ADMIN_PASSWORD='strong-password' docker compose up -d
 
 `prometheus.yml` 默认抓 UDP 9001 和 HTTP 9002。只跑一个协议时删掉另一个 job，否则那个 target 会一直显示 down。
 
-Grafana 面板用的是不带过滤的 `sum(aquatic_*)`，同时跑两个协议时 UDP 与 HTTP 会相加，同一批种子的 torrent / peer 数被算两遍。需要单实例视图时给查询加上 `job="aquatic-http"`。
+### Grafana 面板
+
+`monitoring/grafana/provisioning/dashboards/` 提供两个独立面板，各自用 `job` 标签锁定一个协议实例，互不干扰：
+
+| 面板 | uid | 内容 |
+|---|---|---|
+| Aquatic UDP Tracker 监控面板 | `aquatic-udp-dash` | 种子、Peer、请求量、错误率、流量趋势 |
+| Aquatic HTTP Tracker 监控面板 | `aquatic-http-dash` | 种子、Peer（v4 / v6）、主机资源 |
+
+**两个协议导出的指标不一样**，这是上游实现的差异，不是配置问题：
+
+| 指标 | UDP | HTTP |
+|---|---|---|
+| `aquatic_torrents` / `aquatic_peers` | ✅ | ✅ |
+| `aquatic_requests_total` / `aquatic_responses_total` | ✅ | ❌ |
+| `aquatic_rx_bytes` / `aquatic_tx_bytes` | ✅ | ❌ |
+| `aquatic_active_connections` | ❌ | ❌ |
+
+所以 HTTP 面板只有种子和 Peer 两类数据，请求量、错误率、流量这类图表只在 UDP 面板里有。HTTP 面板里放了一个「指标说明」文本块标注这一点，避免误以为是面板坏了。
+
+`node_*` 主机指标来自 node-exporter，与协议无关，两个面板里都有。
 
 ## 编译
 
