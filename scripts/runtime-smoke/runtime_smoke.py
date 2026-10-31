@@ -178,6 +178,47 @@ def shipped_client_ban_list():
     return (REPO_ROOT / "client-ban-list.txt").read_text(encoding="utf-8")
 
 
+def assert_client_ban_persisted(workdir, label):
+    """A banned client gets a temporary one-day ban in its own file.
+
+    `ip-ban-list.txt` has no expiry column, so it stays reserved for permanent
+    bans; a client ban must land in `client-ban-ips.txt` as
+    `<ip> <expire_unix>` and must never be permanent.
+    """
+    path = workdir / "client-ban-ips.txt"
+    # `check` raises on failure, so the lines below only run once the file
+    # really exists.
+    check(path.is_file(), f"{label}: client ban file created")
+
+    entries = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            entries[parts[0]] = int(parts[1])
+        except ValueError:
+            continue
+
+    check("127.0.0.1" in entries, f"{label}: banned IP persisted immediately")
+
+    now = int(time.time())
+    remaining = entries["127.0.0.1"] - now
+    # One day, +/- the 1800s jitter. Anything at or below zero would mean the
+    # ban already expired, and anything much larger would mean it escalated.
+    check(60 < remaining <= 86_400 + 1_800 + 5,
+          f"{label}: client ban is temporary (~1 day, got {remaining}s)")
+
+    permanent = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
+    listed = {line.strip() for line in permanent.splitlines()
+              if line.strip() and not line.strip().startswith("#")}
+    check("127.0.0.1" not in listed,
+          f"{label}: temporary client ban kept out of the permanent list")
+
+
 def udp_config(directory, port, *, ip_ban_on=True, client_ban_on=True,
                private_filter=False, auto_ban=False,
                ipv6_only=False, metrics_port=None, peer_id_strictness=None,
@@ -253,6 +294,7 @@ threshold = 2
 window_secs = 30
 ban_duration_secs = 0
 ban_list_path = "ip-ban-list.txt"
+client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1
 """)
 
@@ -346,6 +388,7 @@ threshold = 2
 window_secs = 30
 ban_duration_secs = 0
 ban_list_path = "ip-ban-list.txt"
+client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1
 {metrics}
 """)
@@ -433,6 +476,7 @@ threshold = 2
 window_secs = 30
 ban_duration_secs = 0
 ban_list_path = "ip-ban-list.txt"
+client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1
 {metrics}
 """)
@@ -524,8 +568,7 @@ def udp_autoban(port, workdir):
     # Shorter than flush_interval_secs (1s in this config): the ban must
     # already be on disk without waiting for the periodic flush.
     time.sleep(0.2)
-    content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "udp autoban: banned IP persisted immediately")
+    assert_client_ban_persisted(workdir, "udp autoban")
 
 
 def udp_ipban(port):
@@ -727,8 +770,7 @@ def http_autoban(port, workdir):
     # Shorter than flush_interval_secs (1s in this config): the ban must
     # already be on disk without waiting for the periodic flush.
     time.sleep(0.2)
-    content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "http autoban: banned IP persisted immediately")
+    assert_client_ban_persisted(workdir, "http autoban")
 
 
 def http_hotreload(port, server, workdir):
@@ -907,8 +949,7 @@ def ws_autoban(port, workdir):
     # Shorter than flush_interval_secs (1s in this config): the ban must
     # already be on disk without waiting for the periodic flush.
     time.sleep(0.2)
-    content = (workdir / "ip-ban-list.txt").read_text(encoding="utf-8")
-    check("127.0.0.1" in content, "ws autoban: banned IP persisted immediately")
+    assert_client_ban_persisted(workdir, "ws autoban")
 
 
 def ws_hotreload(port, server, workdir):
