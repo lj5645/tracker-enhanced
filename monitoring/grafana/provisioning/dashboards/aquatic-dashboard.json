@@ -917,7 +917,7 @@
     {
       "id": 11,
       "type": "text",
-      "title": "",
+      "title": "指标说明",
       "gridPos": {
         "h": 5,
         "w": 4,
