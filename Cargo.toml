@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.5.12"
+version = "1.5.13"
 authors = ["Joakim Frostegård <joakim.frostegard@gmail.com>"]
 edition = "2021"
 license = "Apache-2.0"

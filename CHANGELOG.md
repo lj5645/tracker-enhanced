@@ -1,5 +1,18 @@
 # 更新日志
 
+## v1.5.13
+
+### HTTP 收发字节指标（补齐流量面板）
+
+- 新增 `aquatic_rx_bytes{worker_index}`（counter）：HTTP 每次从 socket 读入
+  字节后累计；`aquatic_tx_bytes{worker_index}`（counter）：正常响应按写出
+  字节数、Bad Request 响应按固定长度累计
+- 指标名与 UDP 侧对齐（此前仅 UDP 统计收发字节，`aquatic_rx/tx_bytes` 在
+  HTTP 不存在），Grafana 流量面板可直接按 job 出 UDP/TCP 两条线
+- HTTP 的 rx 统计包含畸形请求字节（在读入点累计）；tx 覆盖正常响应与
+  Bad Request
+- 仅编译 `metrics` feature 时存在
+
 ## v1.5.12
 
 ### 修复：恢复的客户端封禁会挤爆记录上限，导致自动封禁静默失效

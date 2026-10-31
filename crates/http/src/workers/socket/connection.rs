@@ -574,6 +574,13 @@ where
                 return Err(ConnectionError::PeerClosed);
             }
 
+            #[cfg(feature = "metrics")]
+            ::metrics::counter!(
+                "aquatic_rx_bytes",
+                "worker_index" => self.worker_index_string.clone(),
+            )
+            .increment(bytes_read.try_into().unwrap());
+
             self.request_buffer_position += bytes_read;
         }
     }
@@ -785,6 +792,13 @@ where
             .with_context(|| "write bad request response")?;
         self.stream.flush().await.with_context(|| "flush")?;
 
+        #[cfg(feature = "metrics")]
+        ::metrics::counter!(
+            "aquatic_tx_bytes",
+            "worker_index" => self.worker_index_string.clone(),
+        )
+        .increment(BAD_REQUEST_RESPONSE.len() as u64);
+
         Ok(())
     }
 
@@ -863,6 +877,12 @@ where
                 "worker_index" => self.worker_index_string.clone(),
             )
             .increment(1);
+
+            ::metrics::counter!(
+                "aquatic_tx_bytes",
+                "worker_index" => self.worker_index_string.clone(),
+            )
+            .increment(position.try_into().unwrap());
         }
 
         Ok(())

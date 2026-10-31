@@ -926,7 +926,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**指标差异**\n\n- 收发字节：仅 UDP\n- 活跃连接：仅 TCP\n- 其余两协议都有\n\nHTTP 的计数器首次使用前\n不会出现在端点里。"
+        "content": "**指标差异**\n\n- 收发字节：UDP / HTTP 均有（v1.5.13 起 HTTP 补齐）\n- 活跃连接：仅 TCP\n- 其余两协议都有\n\nHTTP 的计数器首次使用前\n不会出现在端点里。"
       }
     },
     {
@@ -1010,7 +1010,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"announce\",job=\"aquatic-udp\"})",
+          "expr": "sum(aquatic_responses_total{type=\"announce\",job=~\"aquatic-(udp|http)\"})",
           "legendFormat": "Announce",
           "refId": "A"
         },
@@ -1019,7 +1019,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"scrape\",job=\"aquatic-udp\"})",
+          "expr": "sum(aquatic_responses_total{type=\"scrape\",job=~\"aquatic-(udp|http)\"})",
           "legendFormat": "Scrape",
           "refId": "B"
         },
@@ -1028,12 +1028,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(aquatic_responses_total{type=\"error\",job=\"aquatic-udp\"})",
+          "expr": "sum(aquatic_responses_total{type=\"error\",job=~\"aquatic-(udp|http)\"})",
           "legendFormat": "已过滤",
           "refId": "C"
         }
       ],
-      "title": "请求类型统计（仅 UDP）",
+      "title": "请求类型统计",
       "type": "timeseries"
     },
     {
@@ -1117,8 +1117,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(aquatic_rx_bytes{job=\"aquatic-udp\"}[5m]))",
-          "legendFormat": "入站",
+          "editorMode": "code",
+          "expr": "sum by (job) (rate(aquatic_rx_bytes[$__rate_interval]))",
+          "legendFormat": "{{job}} 收",
+          "range": true,
           "refId": "A"
         },
         {
@@ -1126,12 +1128,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(aquatic_tx_bytes{job=\"aquatic-udp\"}[5m]))",
-          "legendFormat": "出站",
+          "editorMode": "code",
+          "expr": "sum by (job) (rate(aquatic_tx_bytes[$__rate_interval]))",
+          "legendFormat": "{{job}} 发",
+          "range": true,
           "refId": "B"
         }
       ],
-      "title": "入/出流量趋势（仅 UDP）",
+      "title": "入/出流量趋势（UDP + TCP）",
       "type": "timeseries"
     },
     {
