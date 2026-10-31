@@ -781,7 +781,7 @@ impl AutoBanTracker {
                 ::metrics::counter!(
                     "aquatic_auto_bans_total",
                     "reason" => reason.as_str(),
-                    "tier" => tier.as_str(),
+                    "tier" => reason.tier().as_str(),
                 )
                 .increment(1);
             }
