@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ip_ban::IpBanConfig;
 
+/// Absolute ceiling for the auto-ban record map. Auto-growing stops here;
+/// ~200 bytes per record means ~400 MB at the cap, so this is memory-safe
+/// while still being far above any observed abuse volume.
+const HARD_MAX_RECORDS: usize = 2_000_000;
+
 /// Auto-ban configuration
 #[derive(Clone, Debug, PartialEq, TomlConfig, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -663,6 +668,37 @@ impl AutoBanTracker {
                 }
 
                 if inner.records.len() >= max_records {
+                    // Auto-grow instead of dropping violations: the map holds
+                    // only currently-banned or recently-active IPs, so a full
+                    // map means the abuse volume genuinely outgrew the limit.
+                    // Dropping new offenders here silently disables auto-ban
+                    // for them (hit in production, see v1.5.12/v1.5.14).
+                    let grown = (max_records.saturating_mul(2)).min(HARD_MAX_RECORDS);
+
+                    if grown > max_records {
+                        inner.max_records = grown;
+                        ::log::warn!(
+                            "auto-ban: record limit auto-grown {} -> {} IPs (memory ~{} MB); \
+                             if this keeps growing, revisit ban durations",
+                            max_records,
+                            grown,
+                            grown * 200 / 1_048_576,
+                        );
+                    } else if inner
+                        .last_capacity_cleanup
+                        .map_or(true, |last| now.duration_since(last).as_secs() >= 60)
+                    {
+                        // Hard cap reached: log at most once per minute.
+                        inner.last_capacity_cleanup = Some(now);
+                        ::log::warn!(
+                            "auto-ban: hard record cap ({} IPs) reached, not tracking {}",
+                            max_records,
+                            ip,
+                        );
+                    }
+                }
+
+                if inner.records.len() >= max_records {
                     let log_due = inner
                         .last_overflow_log
                         .map_or(true, |last| now.duration_since(last).as_secs() >= 60);
@@ -670,7 +706,7 @@ impl AutoBanTracker {
                     if log_due {
                         inner.last_overflow_log = Some(now);
                         ::log::warn!(
-                            "auto-ban: record limit ({} IPs) reached, not tracking {}",
+                            "auto-ban: hard record cap ({} IPs) reached, not tracking {}",
                             max_records,
                             ip,
                         );
