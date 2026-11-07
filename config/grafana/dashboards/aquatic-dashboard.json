@@ -232,7 +232,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "#5794F2"
           },
           "mappings": [],
           "thresholds": {
@@ -299,28 +300,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum(aquatic_torrents) / 10000",
-          "legendFormat": "UDP",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
-        },
-        {
-          "refId": "B",
+          },
+          "editorMode": "code",
           "expr": "sum(aquatic_torrents) / 10000",
-          "legendFormat": "TCP",
+          "legendFormat": "种子总数",
           "range": true,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
+          "refId": "A"
         }
       ],
       "title": "种子合计 (万)",
@@ -335,7 +327,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "#FF9830"
           },
           "mappings": [],
           "thresholds": {
@@ -402,28 +395,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name"
+        "textMode": "value"
       },
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum(aquatic_peers) / 10000",
-          "legendFormat": "UDP",
-          "range": true,
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
-        },
-        {
-          "refId": "B",
+          },
+          "editorMode": "code",
           "expr": "sum(aquatic_peers) / 10000",
-          "legendFormat": "TCP",
+          "legendFormat": "Peer 总数",
           "range": true,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
+          "refId": "A"
         }
       ],
       "title": "Peer 合计 (万)",
