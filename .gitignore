@@ -9,3 +9,8 @@
 
 __pycache__/
 *.pyc*.bak-*
+
+# Local monitoring stack (Grafana/Prometheus) — deployed on the server, kept out of the repo
+/monitoring/
+/config/grafana/
+/config/prometheus.yml
