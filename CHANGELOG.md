@@ -1,5 +1,20 @@
 # 更新日志
 
+## v1.5.15
+
+### 修复：HTTP scrape 响应的 downloaded 字段恒为 0
+
+- **现象**：BT 客户端在对 HTTP tracker 做 scrape 时，"下载完成次数"
+  （downloaded / completed）永远显示 0，而 UDP tracker 能看到
+- **根因**：`ScrapeStatistics` 内部统计是正确的——`peer_map.completed_count`
+  在收到 `event=completed` 的 announce 时累加，`scrape_statistics()` 也正确
+  填充了 `downloaded` 字段；但手写的 `ScrapeResponse::write_bytes`
+  把该字段序列化成了字面量 0（`b"e10:downloadedi0e10:incompletei"`），
+  内部数值从未被写出
+- **修复**：序列化时使用 `statistics.downloaded` 的真实值
+- 影响：HTTP scrape 响应现在返回真实的累计完成次数（内存计数，
+  进程重启后从 0 开始重新累计）；UDP scrape 一直正常
+
 ## v1.5.14
 
 ### 修复：记录上限改为自动扩容，彻底根治静默失效

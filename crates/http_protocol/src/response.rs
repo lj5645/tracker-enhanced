@@ -135,7 +135,10 @@ impl ScrapeResponse {
             bytes_written += output.write(b"d8:completei")?;
             bytes_written +=
                 output.write(itoa::Buffer::new().format(statistics.complete).as_bytes())?;
-            bytes_written += output.write(b"e10:downloadedi0e10:incompletei")?;
+            bytes_written += output.write(b"e10:downloadedi")?;
+            bytes_written +=
+                output.write(itoa::Buffer::new().format(statistics.downloaded).as_bytes())?;
+            bytes_written += output.write(b"e10:incompletei")?;
             bytes_written +=
                 output.write(itoa::Buffer::new().format(statistics.incomplete).as_bytes())?;
             bytes_written += output.write(b"ee")?;
