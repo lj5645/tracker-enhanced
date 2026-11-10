@@ -85,6 +85,83 @@ need_root() {
 
 norm() { printf '%s' "$1" | tr '\t' ' ' | sed 's/  */ /g'; }
 
+# ---------- 兼容性自检 ----------
+# 显式列出脚本的前提假设：不满足时给出明确提示，而不是静默失败
+check_compat() {
+  local fail=0 warn=0
+
+  echo "=== 兼容性自检 ==="
+
+  # init 系统：systemd 用于持久化两个 unit
+  local init_name
+  init_name=$(ps -p 1 -o comm= 2>/dev/null || echo unknown)
+  if [ "$init_name" = "systemd" ]; then
+    echo "  [OK]   init: systemd"
+  else
+    echo "  [FAIL] init: $init_name（脚本依赖 systemctl 持久化；OpenRC/sysvinit"
+    echo "         环境请手动把 tracker-notrack.sh 加入启动项并自行 sysctl -p）"
+    fail=$((fail + 1))
+  fi
+
+  # bash 版本：关联数组需要 4.0+
+  if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] 2>/dev/null; then
+    echo "  [OK]   bash: ${BASH_VERSION%%(*}（关联数组可用）"
+  else
+    echo "  [FAIL] bash: 需要 4.0+（当前 ${BASH_VERSION:-unknown}）"
+    fail=$((fail + 1))
+  fi
+
+  # iptables：NOTRACK 规则依赖它
+  if command -v iptables >/dev/null 2>&1; then
+    local backend
+    backend=$(iptables -V 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p')
+    echo "  [OK]   iptables: ${backend:-unknown}（NOTRACK 在 nf_tables 后端会翻译为 ct notrack）"
+  else
+    echo "  [FAIL] iptables 未安装：纯 nftables 环境请改用"
+    echo "         nft add rule ip raw prerouting tcp dport 6969 notrack"
+    echo "         nft add rule ip raw prerouting udp dport 6969 notrack"
+    fail=$((fail + 1))
+  fi
+
+  # firewalld：reload 会清空 raw 表规则
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    echo "  [WARN] firewalld 正在运行：firewall-cmd --reload 会清掉 raw 表规则，"
+    echo "         需要改用 firewalld direct 规则或每次 reload 后重跑 notrack"
+    warn=$((warn + 1))
+  else
+    echo "  [OK]   firewalld: 未运行"
+  fi
+
+  # conntrack 内核模块：所有 sysctl 项都作用于它
+  if [ -d /sys/module/nf_conntrack ] || modprobe -n nf_conntrack >/dev/null 2>&1; then
+    echo "  [OK]   nf_conntrack: 模块可用"
+  else
+    echo "  [FAIL] nf_conntrack 不可用（内核未提供该模块，conntrack 参数无法调整）"
+    fail=$((fail + 1))
+  fi
+
+  # sysctl 命令与目录
+  if [ -x /usr/sbin/sysctl ] || command -v sysctl >/dev/null 2>&1; then
+    echo "  [OK]   sysctl: 可用"
+  else
+    echo "  [FAIL] sysctl 不可用"
+    fail=$((fail + 1))
+  fi
+
+  echo ""
+  if [ "$fail" -gt 0 ]; then
+    echo "自检结果：$fail 项不满足，脚本在该环境上无法完整工作（见上方 FAIL 项）。"
+    return 1
+  fi
+  if [ "$warn" -gt 0 ]; then
+    echo "自检结果：通过，但有 $warn 项警告（见上方 WARN 项）。"
+    return 0
+  fi
+  echo "自检结果：全部通过。"
+  return 0
+}
+
+
 init_conf() {
   mkdir -p "$CONF_DIR"
   if [ ! -f "$PARAMS_FILE" ]; then
@@ -192,6 +269,18 @@ UNIT
 # ---------- 子命令 ----------
 cmd_apply() {
   need_root
+  local force=0
+  for arg in "$@"; do
+    [ "$arg" = "--force" ] && force=1
+  done
+  if ! check_compat; then
+    if [ "$force" -eq 1 ]; then
+      echo "警告：自检未通过，按 --force 继续执行（可能部分功能不可用）。" >&2
+    else
+      echo "中止：请先解决上述问题，或使用 'tracker-tune.sh apply --force' 强制继续。" >&2
+      exit 1
+    fi
+  fi
   init_conf
   write_sysctl
   apply_runtime
@@ -362,7 +451,8 @@ usage() {
 tracker-tune.sh — BT Tracker 服务器内核/网络调优
 
 用法:
-  tracker-tune.sh apply                   应用全部优化（幂等）
+  tracker-tune.sh check                   兼容性自检（不修改任何配置）
+  tracker-tune.sh apply [--force]         应用全部优化（幂等；自检失败时需 --force）
   tracker-tune.sh status                  查看参数与运行状态
   tracker-tune.sh set <参数> <值>           微调单个参数并持久化
   tracker-tune.sh notrack-add <端口>        新增免 conntrack 跟踪端口
@@ -381,6 +471,7 @@ EOF
 
 case "${1:-}" in
   apply)          shift; cmd_apply "$@" ;;
+  check)          shift; check_compat ;;
   status)         shift; cmd_status "$@" ;;
   set)            shift; cmd_set "$@" ;;
   notrack-add)    shift; cmd_notrack_add "$@" ;;

@@ -62,7 +62,8 @@ tracker 无感知）、SYN 溢出、TIME_WAIT 耗尽端口。
 ## 3. 使用方法
 
 ```bash
-# 首次部署（幂等，可重复执行）
+# 首次部署：先自检环境，再应用（幂等，可重复执行）
+sudo /usr/local/sbin/tracker-tune.sh check
 sudo /usr/local/sbin/tracker-tune.sh apply
 
 # 查看状态（参数一致性 + conntrack 使用率 + NOTRACK 命中 + tracker 进程）
@@ -90,7 +91,59 @@ sudo /usr/local/sbin/tracker-tune.sh rollback
 
 ---
 
-## 4. 重要限制与坑
+## 4. 兼容性
+
+脚本**不是**在所有 Linux 上都能工作，它有一组明确的前提假设。运行
+`tracker-tune.sh check` 会在不修改任何配置的情况下逐项检查：
+
+```
+=== 兼容性自检 ===
+  [OK]   init: systemd
+  [OK]   bash: 5.2.37（关联数组可用）
+  [OK]   iptables: nf_tables（NOTRACK 在 nf_tables 后端会翻译为 ct notrack）
+  [OK]   firewalld: 未运行
+  [OK]   nf_conntrack: 模块可用
+  [OK]   sysctl: 可用
+
+自检结果：全部通过。
+```
+
+`apply` 会先跑这套自检，有 FAIL 项时中止（`apply --force` 可强制继续）。
+
+### 4.1 前提假设
+
+| 假设 | 不满足时的表现 | 替代做法 |
+|---|---|---|
+| init 是 **systemd** | 无 `systemctl`，两个 unit 无法安装/开机自启 | 手动把 `tracker-notrack.sh` 加入 `/etc/rc.local` 或对应 init 脚本，并用 `sysctl -p` 应用参数 |
+| **bash 4.0+** | 关联数组语法错误 | 升级 bash（几乎所有现代发行版均满足） |
+| 有 **iptables** 命令 | NOTRACK 规则无法安装 | 纯 nftables 环境直接写：`nft add rule ip raw prerouting tcp dport 6969 notrack`（udp 同理），并自行做成开机任务 |
+| **firewalld 未运行** | `firewall-cmd --reload` 会清空 raw 表规则 | 用 firewalld direct 规则，或 reload 后重跑 `tracker-notrack.sh` |
+| 内核有 **nf_conntrack** 模块 | 所有 conntrack 参数无法调整 | 无替代：该内核不支持连接跟踪 |
+| 存在 `/usr/sbin/sysctl`、`/etc/sysctl.d` | 参数无法持久化 | 按发行版实际路径调整 `SYSCTL_FILE` |
+
+### 4.2 支持矩阵
+
+| 系统 | 状态 | 说明 |
+|---|---|---|
+| Debian 12/13 | ✅ 已验证（生产） | iptables 默认 nf_tables 后端，`-j NOTRACK` 由兼容层翻译为 `ct notrack`，实测命中正常 |
+| Ubuntu 22.04/24.04 | ✅ 预期可用 | 同上（与 Debian 系一致） |
+| RHEL / Rocky / Alma 9 | ⚠️ 需处理 firewalld | 默认启用 firewalld，reload 会清 raw 表规则；建议先配置 firewalld direct 规则或停用 |
+| Alpine / OpenRC 系 | ❌ 不支持开箱运行 | 无 systemd；需手工集成（见 4.1） |
+| 容器（无 systemd） | ❌ 不支持 | `sysctl` 多为只读，且无法安装 unit；调优应在宿主机做 |
+| 纯 nftables（无 iptables 兼容层） | ⚠️ 部分可用 | sysctl 部分正常，NOTRACK 需改用 nft 命令 |
+
+### 4.3 判断当前环境
+
+```bash
+ps -p 1 -o comm=                        # 应为 systemd
+iptables -V                             # 看是 legacy 还是 nf_tables
+systemctl is-active firewalld           # active 则需额外处理
+ls /sys/module/nf_conntrack             # 存在则模块已加载
+```
+
+---
+
+## 5. 重要限制与坑
 
 ### 4.1 NOTRACK 与 NAT / Docker 端口映射冲突
 
@@ -132,7 +185,7 @@ tracker 作为服务端基本不主动建连，这项主要影响本机上的其
 
 ---
 
-## 5. 验证与监控
+## 6. 验证与监控
 
 ### 5.1 部署后验证
 
@@ -171,7 +224,7 @@ netstat -su | grep -E 'receive buffer errors|packet receive errors'
 
 ---
 
-## 6. 与其他部署环节的关系
+## 7. 与其他部署环节的关系
 
 - **tracker 自身配置**：`auto_ban` 的封禁记录上限（v1.5.14 起自动扩容至
   200 万）与内核调优无关，但两者都会随流量规模增长——观察时一起看。
@@ -182,7 +235,7 @@ netstat -su | grep -E 'receive buffer errors|packet receive errors'
 
 ---
 
-## 7. 回滚
+## 8. 回滚
 
 ```bash
 sudo /usr/local/sbin/tracker-tune.sh rollback
