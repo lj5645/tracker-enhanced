@@ -357,7 +357,11 @@ fn append_client_ban_line(path: &Path, ip: &IpAddr, expire_unix: u64) -> ::std::
 
 /// Parse `<ip> <expire_unix>` lines into a map, keeping the latest expiry per
 /// address and dropping entries that have already expired.
-fn parse_client_ban_lines(content: &str, now_unix: u64) -> HashMap<IpAddr, u64> {
+fn parse_client_ban_lines(
+    content: &str,
+    now_unix: u64,
+    ban_private: bool,
+) -> HashMap<IpAddr, u64> {
     let mut out: HashMap<IpAddr, u64> = HashMap::new();
 
     for line in content.lines() {
@@ -374,12 +378,13 @@ fn parse_client_ban_lines(content: &str, now_unix: u64) -> HashMap<IpAddr, u64> 
             None => continue,
         };
 
-        // Never restore a ban for a private/loopback/link-local address.
-        // The file may still contain one written by an older build (before
-        // private sources became exempt); restoring it would re-ban e.g.
+        // Never restore a ban for a private/loopback/link-local address
+        // unless banning private sources was explicitly enabled. The file
+        // may still contain entries written by an older build (before
+        // private sources became exempt); restoring them would re-ban e.g.
         // the hairpin-NAT router or loopback after every restart even
-        // though new violations from those addresses are now ignored.
-        if is_private_source(&ip) {
+        // though new violations from those addresses are ignored.
+        if !ban_private && is_private_source(&ip) {
             continue;
         }
 
@@ -994,7 +999,7 @@ impl AutoBanTracker {
         };
 
         let now_unix = unix_now();
-        let parsed = parse_client_ban_lines(&content, now_unix);
+        let parsed = parse_client_ban_lines(&content, now_unix, self.ban_private_ips);
         let count = parsed.len();
 
         if count == 0 {
@@ -1072,7 +1077,11 @@ impl AutoBanTracker {
         };
 
         let now_unix = unix_now();
-        let mut kept: Vec<(IpAddr, u64)> = parse_client_ban_lines(&content, now_unix)
+        let mut kept: Vec<(IpAddr, u64)> = parse_client_ban_lines(
+                &content,
+                now_unix,
+                self.ban_private_ips,
+            )
             .into_iter()
             .collect();
         kept.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1539,10 +1548,14 @@ mod tests {
         // Entries written by older builds must not come back after a restart.
         let now = 1_000u64;
         let content = "192.168.66.254 2000\n10.0.0.1 2000\nfe80::1 2000\n8.8.8.8 2000\n";
-        let map = parse_client_ban_lines(content, now);
+        let map = parse_client_ban_lines(content, now, false);
 
         assert_eq!(map.len(), 1);
         assert!(map.contains_key(&"8.8.8.8".parse::<IpAddr>().unwrap()));
+
+        // Explicit opt-in keeps the legacy entries restorable.
+        let map = parse_client_ban_lines(content, now, true);
+        assert_eq!(map.len(), 4);
     }
 
     #[test]
