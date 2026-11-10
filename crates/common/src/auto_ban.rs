@@ -1834,12 +1834,12 @@ mod tests {
         // The ban must be on disk before any flush runs: a restart at this
         // point would otherwise unban the IP.
         let contents = std::fs::read_to_string(&tmp).unwrap();
-        assert_eq!(contents, "10.20.30.40\n");
+        assert_eq!(contents, "198.51.100.40\n");
 
         // The periodic flush must not append the same IP again.
         assert_eq!(tracker.flush_to_file(), vec![ip]);
         let contents = std::fs::read_to_string(&tmp).unwrap();
-        assert_eq!(contents.matches("10.20.30.40").count(), 1);
+        assert_eq!(contents.matches("198.51.100.40").count(), 1);
 
         let _ = std::fs::remove_file(&tmp);
     }
