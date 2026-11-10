@@ -374,6 +374,15 @@ fn parse_client_ban_lines(content: &str, now_unix: u64) -> HashMap<IpAddr, u64> 
             None => continue,
         };
 
+        // Never restore a ban for a private/loopback/link-local address.
+        // The file may still contain one written by an older build (before
+        // private sources became exempt); restoring it would re-ban e.g.
+        // the hairpin-NAT router or loopback after every restart even
+        // though new violations from those addresses are now ignored.
+        if is_private_source(&ip) {
+            continue;
+        }
+
         let expire = match parts.next().and_then(|s| s.parse::<u64>().ok()) {
             Some(expire) => expire,
             None => continue,
@@ -1523,6 +1532,17 @@ mod tests {
 
         assert!(tracker.is_auto_banned(&ip));
         assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+    }
+
+    #[test]
+    fn client_ban_restore_skips_private_addresses() {
+        // Entries written by older builds must not come back after a restart.
+        let now = 1_000u64;
+        let content = "192.168.66.254 2000\n10.0.0.1 2000\nfe80::1 2000\n8.8.8.8 2000\n";
+        let map = parse_client_ban_lines(content, now);
+
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&"8.8.8.8".parse::<IpAddr>().unwrap()));
     }
 
     #[test]
