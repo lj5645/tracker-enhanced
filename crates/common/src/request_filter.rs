@@ -203,16 +203,20 @@ impl RequestFilter {
 
     /// Check if the URI contains SQL injection patterns
     pub fn is_sql_injection(&self, uri: &str) -> bool {
-        self.sql_injection_patterns
-            .iter()
-            .any(|pattern| matches_pattern(uri, pattern))
+        uri_without_opaque_params(uri, |part| {
+            self.sql_injection_patterns
+                .iter()
+                .any(|pattern| matches_pattern(part, pattern))
+        })
     }
 
     /// Check if the URI contains path traversal patterns
     pub fn is_path_traversal(&self, uri: &str) -> bool {
-        self.path_traversal_patterns
-            .iter()
-            .any(|pattern| contains_ascii_case_insensitive(uri, pattern))
+        uri_without_opaque_params(uri, |part| {
+            self.path_traversal_patterns
+                .iter()
+                .any(|pattern| contains_ascii_case_insensitive(part, pattern))
+        })
     }
 
     /// Check if the User-Agent matches crawler patterns
@@ -223,6 +227,47 @@ impl RequestFilter {
                 .any(|pattern| contains_ascii_case_insensitive(ua, pattern))
         })
     }
+}
+
+/// Parameters whose values are opaque, percent-encoded binary data. A 20-byte
+/// info hash or peer id legitimately contains byte sequences such as `--`,
+/// `..` or `/*`, so inspecting their raw values makes the pattern checks
+/// reject innocent clients at random — a peer id with `--` in it used to trip
+/// the SQL-injection filter and produce "Request filtered" roughly once every
+/// few dozen announces.
+const OPAQUE_PARAMS: [&str; 3] = ["info_hash", "peer_id", "key"];
+
+/// Run `pred` over the URI path and over every query parameter name/value that
+/// is not opaque binary data. Never allocates.
+fn uri_without_opaque_params(uri: &str, pred: impl Fn(&str) -> bool) -> bool {
+    let (path, query) = match uri.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (uri, ""),
+    };
+
+    if pred(path) {
+        return true;
+    }
+
+    for pair in query.split('&') {
+        let (name, value) = match pair.split_once('=') {
+            Some((name, value)) => (name, value),
+            None => (pair, ""),
+        };
+
+        if OPAQUE_PARAMS
+            .iter()
+            .any(|opaque| name.eq_ignore_ascii_case(opaque))
+        {
+            continue;
+        }
+
+        if pred(name) || pred(value) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Match one SQL-injection pattern without allocating.
@@ -314,17 +359,66 @@ mod tests {
     fn test_sql_injection_detection() {
         let filter = RequestFilter::new();
 
+        // Injection in a non-opaque parameter or in the path is still caught.
         assert_eq!(
-            filter.check_request("/announce?info_hash=1%20union%20select", None, false),
+            filter.check_request("/announce?info_hash=valid&key=1%20union%20select", None, false),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
-            filter.check_request("/announce?info_hash=union select", None, false),
+            filter.check_request("/announce?info_hash=valid&junk=union select", None, false),
+            FilterResult::BlockedSqlInjection
+        );
+        assert_eq!(
+            filter.check_request("/announce/1%20union%20select", None, false),
             FilterResult::BlockedSqlInjection
         );
         assert_eq!(
             filter.check_request("/announce?info_hash=valid", None, false),
             FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_opaque_params_do_not_trigger_sql_filter() {
+        let filter = RequestFilter::new();
+
+        // peer ids are 20 random bytes; `--` in them is not an injection.
+        assert_eq!(
+            filter.check_request(
+                "/announce?info_hash=%ad%f5&peer_id=-qB5240-!68mu--xmH-w&port=6881",
+                None,
+                false
+            ),
+            FilterResult::Allowed
+        );
+        // Same for SQL keywords encoded inside a 20-byte info hash.
+        assert_eq!(
+            filter.check_request(
+                "/announce?info_hash=1%20union%20select&peer_id=-LT12A0-abc",
+                None,
+                false
+            ),
+            FilterResult::Allowed
+        );
+    }
+
+    #[test]
+    fn test_opaque_params_do_not_trigger_path_traversal_filter() {
+        let filter = RequestFilter::new();
+
+        // `..%2f`-style byte sequences occur at random inside hashes/peer ids.
+        assert_eq!(
+            filter.check_request("/announce?info_hash=%2e%2e&peer_id=-qB5240-abc", None, false),
+            FilterResult::Allowed
+        );
+        assert_eq!(
+            filter.check_request("/announce?info_hash=..%2f&peer_id=-LT12A0-abc", None, false),
+            FilterResult::Allowed
+        );
+        // Traversal in the path is still rejected.
+        assert_eq!(
+            filter.check_request("/announce/../../etc/passwd", None, false),
+            FilterResult::BlockedPathTraversal
         );
     }
 

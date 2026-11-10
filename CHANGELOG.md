@@ -1,5 +1,25 @@
 # 更新日志
 
+## v1.5.17
+
+### 修复：SQL 注入 / 路径遍历过滤器误伤正常客户端（"Request filtered"）
+
+- **现象**：客户端（qBittorrent、vmsBt 等）偶尔收到
+  `failure reason: Request filtered`，过一段时间又恢复正常
+- **根因**：`is_sql_injection` / `is_path_traversal` 对**整个 URI（含
+  info_hash 与 peer_id 的原始值）**做模式匹配。这两个参数是 20 字节
+  随机/二进制数据（URL 编码），本身就可能包含 `--`、`/*`、`%2e%2e`、
+  `..%2f` 等字节序列——例如 peer_id `-qB5240-!68mu--xmH-w` 中的 `--`
+  被当作 SQL 注释直接拒绝。按随机分布估算，正常客户端每几十次 announce
+  就会被误杀一次
+- **修复**：新增 `uri_without_opaque_params`——检查时跳过 `info_hash`、
+  `peer_id`、`key` 三个不透明参数的值（零分配，路径名与参数名仍参与
+  检查）；路径部分与其余参数（含自定义参数）依旧完整检查，真实 SQL
+  注入与路径遍历仍会被拦截
+- 单元测试覆盖：peer_id/info_hash 内含 `--`、`union select`、`..%2f`
+  时放行；路径中的 `../../etc/passwd` 与非不透明参数中的 `union select`
+  仍然拒绝
+
 ## v1.5.16
 
 ### 补齐 WS 协议的完成下载计数（与 HTTP/UDP 对齐）
