@@ -31,9 +31,9 @@ tracker 无感知）、SYN 溢出、TIME_WAIT 耗尽端口。
 | `net.netfilter.nf_conntrack_tcp_timeout_established` | 432000（5 天） | **86400（1 天）** | 注意这是**调小**：已建立连接条目的保留时间。tracker 侧连接多是短命/半开，5 天保留纯属浪费表空间，1 天足够 |
 | `net.core.rmem_max` | 212992 | **16777216（16 MB）** | 单 socket 接收缓冲上限。UDP tracker 高吞吐下，缓冲太小导致内核丢包（`netstat -su` 的 receive buffer errors） |
 | `net.core.wmem_max` | 212992 | **16777216（16 MB）** | 同上，发送方向 |
-| `net.core.netdev_max_backlog` | 1000 | **32768** | 网卡收包队列。高 PPS 下队列太短会丢包 |
-| `net.core.somaxconn` | 4096 | **32768** | accept 队列上限。突发连接（大量客户端同时 announce）时防止 SYN/accept 溢出 |
-| `net.ipv4.tcp_max_syn_backlog` | 1024 | **16384** | 半开连接（SYN 已收、握手未完成）队列。公网扫描下必须放大 |
+| `net.core.netdev_max_backlog` | 1000 | **65535** | 网卡收包队列。高 PPS 下队列太短会丢包 |
+| `net.core.somaxconn` | 4096 | **65535** | accept 队列上限。突发连接（大量客户端同时 announce）时防止 SYN/accept 溢出 |
+| `net.ipv4.tcp_max_syn_backlog` | 1024 | **65535** | 半开连接（SYN 已收、握手未完成）队列。公网扫描下必须放大 |
 | `net.ipv4.tcp_max_tw_buckets` | 65536 | **262144** | TIME_WAIT 数量上限。超过后内核会丢弃并打日志，tracker 短连接多 |
 | `net.ipv4.tcp_fin_timeout` | 60 | **15** | FIN_WAIT_2 超时（秒）。更快的连接回收 |
 | `net.ipv4.tcp_tw_reuse` | 2（仅 loopback） | **1（全部启用）** | 允许复用 TIME_WAIT 连接。对 tracker 作为**服务端**影响有限（主要利好主动连接），但无害 |
@@ -52,7 +52,8 @@ tracker 无感知）、SYN 溢出、TIME_WAIT 耗尽端口。
   表压力几乎归零。
 - **两个 systemd unit**：
   - `conntrack-tune.service`：开机时 `sysctl -p /etc/sysctl.d/99-conntrack.conf`
-    （防止其他 sysctl 文件覆盖）
+    （防止其他 sysctl 文件覆盖；oneshot + `RemainAfterExit=yes`，执行后
+    保持 active 状态便于确认）
   - `tracker-notrack.service`：开机时重新安装 NOTRACK 规则
     （iptables 规则不持久化，重启会丢失）
 

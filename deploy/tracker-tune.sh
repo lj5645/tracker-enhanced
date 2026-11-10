@@ -51,9 +51,9 @@ declare -A TUNED=(
   ["net.netfilter.nf_conntrack_tcp_timeout_established"]="86400"
   ["net.core.rmem_max"]="16777216"
   ["net.core.wmem_max"]="16777216"
-  ["net.core.netdev_max_backlog"]="32768"
-  ["net.core.somaxconn"]="32768"
-  ["net.ipv4.tcp_max_syn_backlog"]="16384"
+  ["net.core.netdev_max_backlog"]="65535"
+  ["net.core.somaxconn"]="65535"
+  ["net.ipv4.tcp_max_syn_backlog"]="65535"
   ["net.ipv4.tcp_max_tw_buckets"]="262144"
   ["net.ipv4.tcp_fin_timeout"]="15"
   ["net.ipv4.tcp_tw_reuse"]="1"
@@ -175,6 +175,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/sbin/sysctl -p /etc/sysctl.d/99-conntrack.conf
 
 [Install]
@@ -185,6 +186,7 @@ UNIT
   systemctl enable tracker-notrack.service >/dev/null 2>&1
   systemctl enable conntrack-tune.service >/dev/null 2>&1
   systemctl restart tracker-notrack.service
+  systemctl restart conntrack-tune.service
 }
 
 # ---------- 子命令 ----------
