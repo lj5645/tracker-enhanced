@@ -1,5 +1,19 @@
 # 更新日志
 
+## v1.5.16
+
+### 补齐 WS 协议的完成下载计数（与 HTTP/UDP 对齐）
+
+- **现状梳理**：三个协议的 scrape 都带 `downloaded`/`completed` 字段
+  （下载完成次数），但实现程度不同——HTTP 内部有计数（v1.5.15 修复了序列化
+  写死 0 的问题）；UDP 一直返回真实值；**WS 此前完全没有实现**
+  （`TorrentData` 无计数字段，scrape 里 `downloaded: 0, // No implementation
+  planned`）
+- **本次**：WS 的 `TorrentData` 增加 `completed_count`，在
+  `insert_or_update_peer` 中收到 `event=completed` 时累加（与 HTTP/UDP
+  语义一致，同 torrent 重复的 completed 事件也计数），scrape 响应返回真实值
+- 该计数为内存累计，进程重启后从 0 开始（与 HTTP/UDP 相同）
+
 ## v1.5.15
 
 ### 修复：HTTP scrape 响应的 downloaded 字段恒为 0

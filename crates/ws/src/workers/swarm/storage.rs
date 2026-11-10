@@ -248,7 +248,8 @@ impl TorrentMap {
             if let Some(torrent_data) = self.torrents.get(&info_hash) {
                 let stats = ScrapeStatistics {
                     complete: torrent_data.num_seeders,
-                    downloaded: 0, // No implementation planned
+                    downloaded: usize::try_from(torrent_data.completed_count)
+                        .unwrap_or(usize::MAX),
                     incomplete: torrent_data.num_leechers(),
                 };
 
@@ -311,6 +312,9 @@ impl TorrentMap {
 struct TorrentData {
     peers: IndexMap<PeerId, Peer>,
     num_seeders: usize,
+    /// Cumulative count of completed downloads (announce with event=completed),
+    /// reported in scrape responses like the HTTP/UDP implementations do.
+    completed_count: u64,
 }
 
 impl TorrentData {
@@ -327,6 +331,14 @@ impl TorrentData {
         #[cfg(feature = "metrics")] peer_gauge: &::metrics::Gauge,
     ) -> PeerStatus {
         let valid_until = ValidUntil::new(server_start_instant, config.cleaning.max_peer_age);
+
+        // Completed downloads are counted per torrent for scrape responses.
+        // Only the Completed event counts: repeated announces carrying it are
+        // rare in practice and the reference HTTP/UDP implementations count
+        // every Completed event as well.
+        if request.event == Some(AnnounceEvent::Completed) {
+            self.completed_count = self.completed_count.saturating_add(1);
+        }
 
         let peer_status = PeerStatus::from_event_and_bytes_left(
             request.event.unwrap_or_default(),
