@@ -293,6 +293,8 @@ enabled = {str(auto_ban).lower()}
 threshold = 2
 window_secs = 30
 ban_duration_secs = 0
+# smoke tests connect over loopback, which auto-ban skips in production
+ban_private_ips = true
 ban_list_path = "ip-ban-list.txt"
 client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1
@@ -387,6 +389,8 @@ enabled = {str(auto_ban).lower()}
 threshold = 2
 window_secs = 30
 ban_duration_secs = 0
+# smoke tests connect over loopback, which auto-ban skips in production
+ban_private_ips = true
 ban_list_path = "ip-ban-list.txt"
 client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1
@@ -475,6 +479,8 @@ enabled = {str(auto_ban).lower()}
 threshold = 2
 window_secs = 30
 ban_duration_secs = 0
+# smoke tests connect over loopback, which auto-ban skips in production
+ban_private_ips = true
 ban_list_path = "ip-ban-list.txt"
 client_ban_list_path = "client-ban-ips.txt"
 flush_interval_secs = 1

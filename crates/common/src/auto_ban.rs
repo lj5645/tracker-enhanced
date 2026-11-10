@@ -44,6 +44,13 @@ pub struct AutoBanConfig {
     pub threshold: u32,
     /// Time window in seconds for counting violations
     pub window_secs: u64,
+    /// Allow banning private, loopback and link-local source addresses.
+    ///
+    /// Keep this off in production: behind hairpin NAT every LAN client
+    /// shares the router's private address, so one false positive bans the
+    /// whole network. Only enable it in controlled tests (the runtime smoke
+    /// suite does, because it connects over 127.0.0.1).
+    pub ban_private_ips: bool,
     /// Ban duration in seconds. Use 0 for permanent ban (the default).
     ///
     /// Permanent bans (`0`) are appended to `ban_list_path` immediately, so
@@ -115,6 +122,7 @@ impl Default for AutoBanConfig {
             // enabling auto_ban without specifying a duration would silently
             // stop protecting the server after a restart.
             ban_duration_secs: 0,
+            ban_private_ips: false,
             ban_list_path: PathBuf::from("./ip-ban-list.txt"),
             flush_interval_secs: 60,
             // Inherit `ban_duration_secs`: a permanent default duration must
@@ -388,6 +396,8 @@ fn parse_client_ban_lines(content: &str, now_unix: u64) -> HashMap<IpAddr, u64> 
 /// Thread-safe auto-ban tracker using RwLock for correct concurrent access
 pub struct AutoBanTracker {
     inner: RwLock<AutoBanInner>,
+    /// Whether private/loopback/link-local sources may be banned at all.
+    ban_private_ips: bool,
     /// Read-only policy, kept out of the lock so it is readable while a record
     /// is mutably borrowed.
     policy: AutoBanPolicy,
@@ -617,6 +627,7 @@ impl AutoBanTracker {
         };
 
         Self {
+            ban_private_ips: config.ban_private_ips,
             inner: RwLock::new(AutoBanInner {
                 records: HashMap::new(),
                 threshold,
@@ -652,7 +663,7 @@ impl AutoBanTracker {
         // single false positive takes the whole network offline — observed in
         // production: a router's address (192.168.66.254) received a permanent
         // SQL-injection ban while relaying a LAN client's announce.
-        if is_private_source(ip) {
+        if !self.ban_private_ips && is_private_source(ip) {
             return false;
         }
 
