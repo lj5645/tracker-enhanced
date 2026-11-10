@@ -16,6 +16,21 @@ use crate::ip_ban::IpBanConfig;
 /// while still being far above any observed abuse volume.
 const HARD_MAX_RECORDS: usize = 2_000_000;
 
+/// Whether an address is private, loopback or link-local, i.e. not a public
+/// peer that auto-ban should ever act on.
+fn is_private_source(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                // fc00::/7 unique local
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // fe80::/10 link local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// Auto-ban configuration
 #[derive(Clone, Debug, PartialEq, TomlConfig, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -632,6 +647,15 @@ impl AutoBanTracker {
     /// a ban cannot be lost to a restart that happens between the ban and the
     /// next periodic flush. Temporary bans stay memory-only by design.
     pub fn record_violation(&self, ip: &IpAddr, reason: AutoBanReason) -> bool {
+        // Never ban private/loopback/link-local sources. Behind hairpin NAT
+        // every client on the LAN shares one private source address, so a
+        // single false positive takes the whole network offline — observed in
+        // production: a router's address (192.168.66.254) received a permanent
+        // SQL-injection ban while relaying a LAN client's announce.
+        if is_private_source(ip) {
+            return false;
+        }
+
         let (should_ban, is_permanent) = {
             let mut inner = self.inner.write().unwrap();
             let now = Instant::now();
@@ -1478,7 +1502,7 @@ mod tests {
         // `PrivateIp` belongs to the counting tier: high-severity reasons ban
         // on the first violation and are covered by their own test.
         let tracker = AutoBanTracker::new(3, 60, 3600, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
 
         assert!(!tracker.is_auto_banned(&ip));
 
@@ -1488,6 +1512,38 @@ mod tests {
 
         assert!(tracker.is_auto_banned(&ip));
         assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
+    }
+
+    #[test]
+    fn private_sources_are_never_banned() {
+        // Behind hairpin NAT every LAN client shares the router's private
+        // address; banning it took a whole LAN offline in production.
+        let tracker = AutoBanTracker::new(1, 60, 0, None);
+
+        let private_ips = [
+            "192.168.66.254",
+            "10.0.0.1",
+            "172.20.5.5",
+            "127.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+        ];
+
+        for raw in private_ips {
+            let ip: IpAddr = raw.parse().unwrap();
+            assert!(
+                !tracker.record_violation(&ip, AutoBanReason::SqlInjection),
+                "{raw} must never be banned"
+            );
+            assert!(!tracker.is_auto_banned(&ip), "{raw} must not be banned");
+        }
+
+        // A public address with the same reason is still banned immediately.
+        let public: IpAddr = "203.0.113.99".parse().unwrap();
+        assert!(tracker.record_violation(&public, AutoBanReason::SqlInjection));
+        assert!(tracker.is_auto_banned(&public));
     }
 
     #[test]
@@ -1503,8 +1559,8 @@ mod tests {
     #[test]
     fn test_different_ips_independent() {
         let tracker = AutoBanTracker::new(2, 60, 3600, None);
-        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
+        let ip1 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 2));
 
         assert!(!tracker.record_violation(&ip1, AutoBanReason::PrivateIp));
         assert!(!tracker.record_violation(&ip2, AutoBanReason::PrivateIp));
@@ -1517,7 +1573,7 @@ mod tests {
     #[test]
     fn test_threshold_one() {
         let tracker = AutoBanTracker::new(1, 60, 3600, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert!(tracker.is_auto_banned(&ip));
@@ -1648,7 +1704,7 @@ mod tests {
     fn test_flush_temporary_ban_no_file() {
         // Use ban_duration_secs=3600 for temporary bans (NOT written to file)
         let tracker = AutoBanTracker::new(1, 60, 3600, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
         assert_eq!(tracker.tracked_count(), 1);
@@ -1665,7 +1721,7 @@ mod tests {
     #[test]
     fn test_expired_temporary_ban_resets_count() {
         let tracker = AutoBanTracker::new(2, 1, 1, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 9, 8, 7));
+        let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
 
         assert!(!tracker.record_violation(&ip, AutoBanReason::PrivateIp));
         assert!(tracker.record_violation(&ip, AutoBanReason::PrivateIp));
@@ -1752,7 +1808,7 @@ mod tests {
     fn test_flush_no_file_path() {
         // Permanent ban but no file path configured — should return empty
         let tracker = AutoBanTracker::new(1, 60, 0, None);
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 11));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
         assert_eq!(tracker.banned_count(), 1);
@@ -1771,7 +1827,7 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
 
         let tracker = AutoBanTracker::new(1, 60, 0, Some(tmp.clone()));
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 20, 30, 40));
+        let ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 40));
 
         assert!(tracker.record_violation(&ip, AutoBanReason::SqlInjection));
 
