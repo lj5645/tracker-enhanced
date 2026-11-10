@@ -235,7 +235,7 @@ impl RequestFilter {
 /// reject innocent clients at random — a peer id with `--` in it used to trip
 /// the SQL-injection filter and produce "Request filtered" roughly once every
 /// few dozen announces.
-const OPAQUE_PARAMS: [&str; 3] = ["info_hash", "peer_id", "key"];
+const OPAQUE_PARAMS: [&str; 2] = ["info_hash", "peer_id"];
 
 /// Run `pred` over the URI path and over every query parameter name/value that
 /// is not opaque binary data. Never allocates.
@@ -531,7 +531,7 @@ mod tests {
         };
         assert_eq!(
             filter.check_request_with_config(
-                "/announce?info_hash=1%20union%20select",
+                "/announce?info_hash=valid&junk=1%20union%20select",
                 None,
                 &sql_only
             ),
