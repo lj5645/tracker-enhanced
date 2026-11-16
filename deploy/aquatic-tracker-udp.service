@@ -1,0 +1,17 @@
+[Unit]
+Description=Aquatic BT Tracker (UDP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tracker
+ExecStart=/home/tracker/aquatic-linux-x86_64 udp -c aquatic-config.toml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+StandardOutput=append:/home/tracker/aquatic-udp.log
+StandardError=append:/home/tracker/aquatic-udp.log
+
+[Install]
+WantedBy=multi-user.target
