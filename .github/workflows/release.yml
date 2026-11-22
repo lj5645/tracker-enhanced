@@ -34,20 +34,22 @@ env:
 
 jobs:
   build-linux:
-    # Build inside debian:bullseye (glibc 2.31) so the produced binary runs on
-    # every distro with glibc >= 2.31 - Debian 11+, Ubuntu 20.04+, Alibaba
-    # Cloud Linux 3, CentOS Stream 8/9. Building on ubuntu-24.04 (glibc 2.39)
-    # produced binaries that demanded GLIBC_2.38 and refused to start on older
-    # hosts with "version `GLIBC_2.38' not found". Keep the runner at 24.04:
-    # glommio 0.9 / bundled liburing does not compile against 26.04 headers.
+    # Build inside ubuntu:22.04 (glibc 2.35) so the binary runs on Debian 12+,
+    # Ubuntu 22.04+ and any host with glibc >= 2.35. Building on ubuntu-24.04
+    # (glibc 2.39) produced binaries demanding GLIBC_2.38 that refused to start
+    # on older hosts. Debian 11 was considered but is EOL - its security pool
+    # already 404s, so apt inside the container cannot install build deps.
+    # The runner stays at 24.04: glommio 0.9 / bundled liburing does not
+    # compile against 26.04 kernel headers.
     runs-on: ubuntu-24.04
-    container: debian:bullseye
+    container: ubuntu:22.04
     timeout-minutes: 45
     steps:
     - uses: actions/checkout@v4
 
     - name: Install build dependencies
       run: |
+        rm -rf /var/lib/apt/lists/*
         apt-get update
         apt-get install -y --no-install-recommends \
           ca-certificates curl git build-essential cmake pkg-config \
