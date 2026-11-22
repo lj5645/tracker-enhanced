@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.5.20
+
+### 构建：Linux 二进制改用 Debian 11 基线，提升跨发行版兼容性
+
+- **现象**：在其它服务器（glibc 较低）运行 release 二进制时报
+  `./aquatic-linux-x86_64: /lib/x86_64-linux-gnu/libc.so.6: version
+  'GLIBC_2.38' not found`，进程无法启动
+- **原因**：release 在 `ubuntu-24.04`（glibc 2.39）上编译，产物带上
+  `GLIBC_2.38` 符号版本要求
+- **修复**：Linux 构建改在 `debian:bullseye` 容器内完成（glibc 2.31），
+  runner 仍为 ubuntu-24.04（glommio 0.9 的内置 liburing 无法在更新的
+  26.04 内核头文件上编译）
+- **兼容范围**：Debian 11+、Ubuntu 20.04+、Alibaba Cloud Linux 3、
+  CentOS Stream 8/9 等（glibc ≥ 2.31）；CentOS 7（glibc 2.17）仍不支持
+- 验证方法：`objdump -T aquatic-linux-x86_64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`
+
 ## v1.5.19
 
 ### 修复：私网封禁的恢复路径缺口

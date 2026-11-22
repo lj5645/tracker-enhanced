@@ -34,23 +34,30 @@ env:
 
 jobs:
   build-linux:
-    # Pin to 24.04: glommio 0.9 / bundled liburing fails to compile against
-    # the newer kernel headers shipped with ubuntu-latest (26.04).
+    # Build inside debian:bullseye (glibc 2.31) so the produced binary runs on
+    # every distro with glibc >= 2.31 - Debian 11+, Ubuntu 20.04+, Alibaba
+    # Cloud Linux 3, CentOS Stream 8/9. Building on ubuntu-24.04 (glibc 2.39)
+    # produced binaries that demanded GLIBC_2.38 and refused to start on older
+    # hosts with "version `GLIBC_2.38' not found". Keep the runner at 24.04:
+    # glommio 0.9 / bundled liburing does not compile against 26.04 headers.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    container: debian:bullseye
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          ca-certificates curl git build-essential cmake pkg-config \
+          libhwloc-dev liburing-dev
 
     - name: Install latest stable Rust
       uses: dtolnay/rust-toolchain@stable
 
     - name: Setup Rust dependency caching
       uses: Swatinem/rust-cache@v2
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake build-essential libhwloc-dev
 
     - name: Select protocols
       id: protocols
